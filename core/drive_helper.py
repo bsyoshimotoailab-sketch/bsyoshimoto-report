@@ -29,7 +29,10 @@ def get_drive_service():
 
     # Streamlit Secretsから認証情報を取得
     if IN_STREAMLIT and hasattr(st, 'secrets') and 'google_service_account' in st.secrets:
-        sa_info = dict(st.secrets['google_service_account'])
+        sa_info = {str(k): str(v) for k, v in st.secrets['google_service_account'].items()}
+        # TOMLでエスケープされた "\n" を実際の改行コードに変換
+        if 'private_key' in sa_info:
+            sa_info['private_key'] = sa_info['private_key'].replace('\\n', '\n')
         creds = service_account.Credentials.from_service_account_info(sa_info, scopes=SCOPES)
     else:
         # ローカル開発用: service_account.jsonファイルを使用
@@ -37,7 +40,9 @@ def get_drive_service():
         if sa_path.exists():
             creds = service_account.Credentials.from_service_account_file(str(sa_path), scopes=SCOPES)
         else:
-            raise FileNotFoundError("service_account.json が見つかりません")
+            raise FileNotFoundError(
+                "認証情報が見つかりません。Streamlit SecretsにGoogleサービスアカウント情報を設定してください。"
+            )
 
     return build('drive', 'v3', credentials=creds)
 
