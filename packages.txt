@@ -12,3 +12,4 @@ libxfixes3
 libxrandr2
 libxshmfence1
 libgtk-3-0
+libasound2t64
