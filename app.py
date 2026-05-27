@@ -91,6 +91,34 @@ report_type = st.radio(
 
 st.divider()
 
+def _build_promo_section(items: list) -> str:
+    if not items: return ''
+    rows = ''.join(f'''<tr style="border-bottom:1px solid #2a2a35;">
+      <td style="padding:7px 8px;font-size:12px;color:#f0ede8;">{p["program"]}</td>
+      <td style="padding:7px 8px;font-size:11px;color:#f5a623;">{p["period"]}</td>
+      <td style="padding:7px 8px;font-size:11px;color:#d0ccc8;">{p["spots"]}</td>
+      <td style="padding:7px 8px;font-size:11px;color:#d0ccc8;">{p["material"]}</td>
+      <td style="text-align:right;padding:7px 8px;font-size:12px;font-weight:700;color:{"#4ade80" if p["viewing"]>0 else "#7a7a8c"};">{f"{p['viewing']:,}人" if p["viewing"]>0 else "計測中"}</td>
+    </tr>''' for p in items[:20])
+    return f'''
+    <div style="background:#1c1c22;border-radius:6px;padding:20px 24px;margin-bottom:24px;border:1px solid #2a2a35;">
+      <div style="font-size:10px;letter-spacing:4px;color:#f5a623;border-bottom:1px solid #2a2a35;padding-bottom:8px;margin-bottom:16px;">番宣効果モニタリング</div>
+      <div style="font-size:12px;color:#d0ccc8;margin-bottom:14px;">月間_宣伝強化番組_管理リストと今週の視聴データの照合</div>
+      <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="border-bottom:1px solid #f5a623;">
+          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">番組名</th>
+          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">番宣期間</th>
+          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">SPOT回数</th>
+          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">素材</th>
+          <th style="text-align:right;padding:7px 8px;color:#d0ccc8;font-size:11px;">今週視聴人数</th>
+        </tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+      </div>
+    </div>'''
+
+
 # ════════════════════════════════════════
 # ① 週次レポート
 # ════════════════════════════════════════
@@ -358,34 +386,6 @@ elif report_type == '② 番宣効果検証':
             except Exception as e:
                 st.markdown(f'<div class="error-box">❌ エラー: {e}</div>', unsafe_allow_html=True)
                 import traceback; st.code(traceback.format_exc())
-
-
-def _build_promo_section(items: list) -> str:
-    if not items: return ''
-    rows = ''.join(f'''<tr style="border-bottom:1px solid #2a2a35;">
-      <td style="padding:7px 8px;font-size:12px;color:#f0ede8;">{p["program"]}</td>
-      <td style="padding:7px 8px;font-size:11px;color:#f5a623;">{p["period"]}</td>
-      <td style="padding:7px 8px;font-size:11px;color:#d0ccc8;">{p["spots"]}</td>
-      <td style="padding:7px 8px;font-size:11px;color:#d0ccc8;">{p["material"]}</td>
-      <td style="text-align:right;padding:7px 8px;font-size:12px;font-weight:700;color:{"#4ade80" if p["viewing"]>0 else "#7a7a8c"};">{f"{p['viewing']:,}人" if p["viewing"]>0 else "計測中"}</td>
-    </tr>''' for p in items[:20])
-    return f'''
-    <div style="background:#1c1c22;border-radius:6px;padding:20px 24px;margin-bottom:24px;border:1px solid #2a2a35;">
-      <div style="font-size:10px;letter-spacing:4px;color:#f5a623;border-bottom:1px solid #2a2a35;padding-bottom:8px;margin-bottom:16px;">番宣効果モニタリング</div>
-      <div style="font-size:12px;color:#d0ccc8;margin-bottom:14px;">月間_宣伝強化番組_管理リストと今週の視聴データの照合</div>
-      <div style="overflow-x:auto;">
-      <table style="width:100%;border-collapse:collapse;">
-        <thead><tr style="border-bottom:1px solid #f5a623;">
-          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">番組名</th>
-          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">番宣期間</th>
-          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">SPOT回数</th>
-          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">素材</th>
-          <th style="text-align:right;padding:7px 8px;color:#d0ccc8;font-size:11px;">今週視聴人数</th>
-        </tr></thead>
-        <tbody>{rows}</tbody>
-      </table>
-      </div>
-    </div>'''
 
 
 # ════════════════════════════════════════
