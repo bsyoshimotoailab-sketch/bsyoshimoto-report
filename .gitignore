@@ -13,6 +13,7 @@ __pycache__/
 # 一時ファイル
 *.pdf
 *.html
+!template.html
 trend_data.json
 work/
 archive/
