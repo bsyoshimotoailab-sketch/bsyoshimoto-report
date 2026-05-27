@@ -3,12 +3,9 @@
 make_pdf.py
 HTMLをPDFに変換（Playwright使用・クラウド対応）
 """
-import http.server
 import os
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
 
 
@@ -33,45 +30,24 @@ def html_to_pdf(html_path: str, out_path: str) -> str:
     """HTMLファイルをPDFに変換"""
     from playwright.sync_api import sync_playwright
 
-    work_dir = str(Path(html_path).parent)
-    original_dir = os.getcwd()
+    url = Path(html_path).resolve().as_uri()
 
-    try:
-        os.chdir(work_dir)
-
-        # ローカルHTTPサーバーを起動（Chart.js CDN回避のため）
-        port = 18765
-        httpd = http.server.HTTPServer(
-            ('localhost', port),
-            http.server.SimpleHTTPRequestHandler
+    with sync_playwright() as p:
+        browser = _launch_chromium(p)
+        context = browser.new_context(viewport={'width': 1240, 'height': 900})
+        page = context.new_page()
+        page.emulate_media(media='screen')
+        page.goto(url, wait_until='networkidle', timeout=30000)
+        page.wait_for_timeout(3000)
+        page.pdf(
+            path=out_path,
+            format='A4',
+            print_background=True,
+            margin={'top': '8mm', 'bottom': '8mm', 'left': '6mm', 'right': '6mm'}
         )
-        t = threading.Thread(target=httpd.serve_forever)
-        t.daemon = True
-        t.start()
-        time.sleep(0.5)
+        browser.close()
 
-        url = f'http://localhost:{port}/{Path(html_path).name}'
-
-        with sync_playwright() as p:
-            browser = _launch_chromium(p)
-            context = browser.new_context(viewport={'width': 1240, 'height': 900})
-            page = context.new_page()
-            page.emulate_media(media='screen')
-            page.goto(url, wait_until='networkidle', timeout=30000)
-            page.wait_for_timeout(3000)
-            page.pdf(
-                path=out_path,
-                format='A4',
-                print_background=True,
-                margin={'top': '8mm', 'bottom': '8mm', 'left': '6mm', 'right': '6mm'}
-            )
-            browser.close()
-
-        httpd.shutdown()
-        return out_path
-
-    finally:
-        os.chdir(original_dir)
+    return out_path
 
 
 def generate_pdf_from_html_string(html_content: str) -> bytes:
