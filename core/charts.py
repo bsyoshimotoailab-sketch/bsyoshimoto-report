@@ -266,10 +266,30 @@ def chart_jimoto_compare(live_data: list, replay_data: list) -> str:
     return _fig_to_b64(fig)
 
 
-def generate_all_charts(data: dict) -> dict:
+def chart_trend(trend_data: list) -> str:
+    """週次KPIトレンド折れ線グラフ"""
+    if not trend_data or len(trend_data) < 2:
+        return ''
+    weeks  = [f"W{d.get('week_num', i+1)}" for i, d in enumerate(trend_data)]
+    avg_v  = [d.get('kpi_avg', 0) for d in trend_data]
+    max_v  = [d.get('kpi_max', 0) for d in trend_data]
+
+    fig, ax = plt.subplots(figsize=(9, 3.0), facecolor=BG)
+    ax.plot(weeks, avg_v, color=ACCENT,    linewidth=2, marker='o', markersize=4, label='平均視聴率')
+    ax.plot(weeks, max_v, color=JCOM_COLOR, linewidth=1.5, marker='s', markersize=3,
+            linestyle='--', label='最高視聴率')
+    _setup_ax(ax)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.3f}%'))
+    plt.xticks(rotation=45, ha='right', fontsize=7, color=TEXT_MUTED)
+    ax.set_ylim(0, max(max_v) * 1.25 if max(max_v) > 0 else 0.1)
+    ax.legend(fontsize=7, facecolor=SURFACE, edgecolor=BORDER, labelcolor=TEXT_MUTED)
+    fig.tight_layout(pad=0.5)
+    return _fig_to_b64(fig)
+
+
+def generate_all_charts(data: dict, trend_data: list = None) -> dict:
     """全グラフを生成してbase64辞書を返す"""
     ji = data['jimoto']
-    print("  📊 時間帯グラフ...")
     charts = {
         'zone':           chart_zone(data['zone_avgs']),
         'day':            chart_day(data['day_avgs']),
@@ -281,4 +301,8 @@ def generate_all_charts(data: dict) -> dict:
         'jimoto_replay':  chart_jimoto_replay(ji['replay']),
         'jimoto_compare': chart_jimoto_compare(ji['live'], ji['replay']),
     }
+    if trend_data:
+        t = chart_trend(trend_data)
+        if t:
+            charts['trend'] = t
     return charts
