@@ -760,8 +760,10 @@ def generate_html(data, template_path, prev=None):
     # 最強曜日
     html = re.sub(r'<div class="kpi-value">日</div>',
                   f'<div class="kpi-value">{r["best_day"]}</div>', html)
+    best_day_avg = r.get('best_day_avg',
+                         r.get('day_avgs', {}).get(r.get('best_day', ''), 0.0) or 0.0)
     html = re.sub(r'週平均 0\.003% ／ 最上位',
-                  f'週平均 {r["best_day_avg"]:.4f}% ／ 最上位', html)
+                  f'週平均 {best_day_avg:.4f}% ／ 最上位', html)
 
     # ── J:COM 総合指標 ──
     def jcom_rep(old_bs, old_jcom, new_bs, new_jcom, html):
@@ -769,14 +771,14 @@ def generate_html(data, template_path, prev=None):
         html = html.replace(f'>{old_jcom}%</span>', f'>{new_jcom}%</span>', 1)
         return html
 
-    html = html.replace('>0.0016%</span>', f'>{fv(r["yoshi_avg"])}</span>', 1)
-    html = html.replace('>0.0035%</span>', f'>{fv(r["jcom_avg"])}</span>', 1)
-    html = html.replace('>0.0067%</span>', f'>{fv(r["yoshi_demos"]["M4"])}</span>', 1)
-    html = html.replace('>0.0087%</span>', f'>{fv(r["jcom_demos"]["M4"])}</span>', 1)
-    html = html.replace('>0.0003%</span>', f'>{fv(r["yoshi_demos"]["U49"])}</span>', 1)
-    html = html.replace('>0.0000%</span>', f'>{fv(r["jcom_demos"]["U49"])}</span>', 1)
-    html = html.replace('>0.0026%</span>', f'>{fv(r["yoshi_demos"]["F4"])}</span>', 1)
-    html = html.replace('>0.0113%</span>', f'>{fv(r["jcom_demos"]["F4"])}</span>', 1)
+    html = html.replace('>0.0016%</span>', f'>{fv(r.get("yoshi_avg", 0))}</span>', 1)
+    html = html.replace('>0.0035%</span>', f'>{fv(r.get("jcom_avg", 0))}</span>', 1)
+    html = html.replace('>0.0067%</span>', f'>{fv(r.get("yoshi_demos", {}).get("M4", 0))}</span>', 1)
+    html = html.replace('>0.0087%</span>', f'>{fv(r.get("jcom_demos", {}).get("M4", 0))}</span>', 1)
+    html = html.replace('>0.0003%</span>', f'>{fv(r.get("yoshi_demos", {}).get("U49", 0))}</span>', 1)
+    html = html.replace('>0.0000%</span>', f'>{fv(r.get("jcom_demos", {}).get("U49", 0))}</span>', 1)
+    html = html.replace('>0.0026%</span>', f'>{fv(r.get("yoshi_demos", {}).get("F4", 0))}</span>', 1)
+    html = html.replace('>0.0113%</span>', f'>{fv(r.get("jcom_demos", {}).get("F4", 0))}</span>', 1)
 
     # J:COM vs BS 順位表示（仮: 全局順位）
     jcom_rank = r.get('jcom_rank', r['yoshi_rank'])  # placeholder

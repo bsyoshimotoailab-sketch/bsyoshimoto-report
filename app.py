@@ -454,4 +454,4 @@ elif report_type == '③ クール総括マクロ':
 
 # ── フッター ──
 st.divider()
-st.markdown('<p style="color:#4a4a5a;font-size:11px;text-align:center;">BSよしもと 編成制作局 ／ 視聴データ：VideoResearch</p>', unsafe_allow_html=True)
+st.markdown('<p style="color:#4a4a5a;font-size:11px;text-align:center;">BSよしもと 編成制作局 ／ 視聴データ：REGZA</p>', unsafe_allow_html=True)

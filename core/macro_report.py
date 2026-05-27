@@ -340,7 +340,7 @@ def generate_macro_html(summaries: list, quarter: int, year: int = None, promo_d
 </div>
 
 <div class="footer">
-  BSよしもと 編成制作局 ／ 視聴データ：VideoResearch ／ 生成日時：{datetime.now().strftime('%Y.%m.%d')} ／ 対象：{year} {q_name}
+  BSよしもと 編成制作局 ／ 視聴データ：REGZA ／ 生成日時：{datetime.now().strftime('%Y.%m.%d')} ／ 対象：{year} {q_name}
 </div>
 
 </body>
