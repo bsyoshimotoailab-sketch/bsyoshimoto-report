@@ -12,24 +12,21 @@ import time
 from pathlib import Path
 
 
-def _install_playwright_if_needed():
-    """Playwright Chromiumが未インストールなら自動インストール"""
+def _launch_chromium(p):
+    """Chromiumを起動。実行ファイル未検出時のみ自動インストールしてリトライ"""
+    import subprocess
+    _ARGS = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            p.chromium.launch()
-        return True
-    except Exception:
-        try:
-            import subprocess
+        return p.chromium.launch(args=_ARGS)
+    except Exception as e:
+        msg = str(e)
+        if "Executable doesn't exist" in msg or "playwright install" in msg.lower():
             subprocess.run(
-                [sys.executable, '-m', 'playwright', 'install', 'chromium', '--with-deps'],
-                check=True, capture_output=True
+                [sys.executable, '-m', 'playwright', 'install', 'chromium'],
+                check=True
             )
-            return True
-        except Exception as e:
-            print(f"Playwright インストール失敗: {e}")
-            return False
+            return p.chromium.launch(args=_ARGS)
+        raise
 
 
 def html_to_pdf(html_path: str, out_path: str) -> str:
@@ -56,9 +53,7 @@ def html_to_pdf(html_path: str, out_path: str) -> str:
         url = f'http://localhost:{port}/{Path(html_path).name}'
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-            )
+            browser = _launch_chromium(p)
             context = browser.new_context(viewport={'width': 1240, 'height': 900})
             page = context.new_page()
             page.emulate_media(media='screen')
