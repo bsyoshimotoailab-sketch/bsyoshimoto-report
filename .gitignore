@@ -1,0 +1,19 @@
+# 認証情報（絶対にGitHubにあげない）
+service_account.json
+credentials.json
+token.json
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# 一時ファイル
+*.pdf
+*.html
+trend_data.json
+work/
+archive/
+logs/
