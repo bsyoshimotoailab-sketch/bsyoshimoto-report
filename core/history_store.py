@@ -159,3 +159,30 @@ def load_promo_history_df(root_id: str):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
     return df
+
+
+# ── 手動サマリーCSV読み込み ───────────────────────────────────────
+
+def load_manual_summary_df(folder_id: str):
+    """
+    folder_id 直下の manual_weekly_summary_from_pdf.csv を読み込んでDataFrameを返す。
+    ファイルが存在しない・読み込みエラーの場合は空DataFrameを返す。
+    """
+    import pandas as pd
+    from core.drive_helper import list_files_in_folder, download_file
+
+    try:
+        files = list_files_in_folder(folder_id, name_contains='manual_weekly_summary_from_pdf')
+        csv_files = [f for f in files if f['name'].endswith('.csv')]
+        if not csv_files:
+            return pd.DataFrame()
+        data = download_file(csv_files[0]['id'])
+        import io
+        df = pd.read_csv(io.BytesIO(data), encoding='utf-8-sig')
+        for col in ('year', 'week_num', 'total_all_ppl', 'total_program_count',
+                    'kpi_avg', 'kpi_max', 'yoshi_rank'):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df
+    except Exception:
+        return pd.DataFrame()

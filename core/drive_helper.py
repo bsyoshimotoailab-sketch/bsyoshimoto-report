@@ -89,6 +89,63 @@ def download_to_tempfile(file_id: str, suffix: str = '.csv') -> str:
 
 
 
+def find_archive_folders(folder_id: str) -> list:
+    """ratingsフォルダ直下のarchive系サブフォルダを返す（共有ドライブ対応）"""
+    ARCHIVE_NAMES = {'archive', 'Archive', 'ARCHIVE', 'Ratings-archive', 'ratings-archive'}
+    items = list_files_in_folder(folder_id)
+    return [f for f in items
+            if f['mimeType'] == 'application/vnd.google-apps.folder'
+            and f['name'] in ARCHIVE_NAMES]
+
+
+def list_files_recursive(folder_id: str, max_depth: int = 2) -> list:
+    """フォルダ内の非フォルダファイルを再帰的に取得"""
+    items = list_files_in_folder(folder_id)
+    result = [f for f in items if f['mimeType'] != 'application/vnd.google-apps.folder']
+    if max_depth > 0:
+        for sf in [f for f in items if f['mimeType'] == 'application/vnd.google-apps.folder']:
+            result.extend(list_files_recursive(sf['id'], max_depth - 1))
+    return result
+
+
+def get_all_archive_csvs(folder_id: str) -> dict:
+    """
+    ratingsフォルダおよびarchive/Ratings-archiveサブフォルダから全CSVを収集して分類する。
+
+    Returns: {
+        'e2a':  [{'id', 'name', 'date'}, ...],
+        'e1a':  [{'id', 'name', 'date'}, ...],
+        'rank': [{'id', 'name', 'date'}, ...],
+    }
+    """
+    all_files = []
+
+    direct = list_files_in_folder(folder_id)
+    all_files.extend(direct)
+
+    for af in find_archive_folders(folder_id):
+        all_files.extend(list_files_recursive(af['id']))
+
+    e2a, e1a, rank = [], [], []
+    seen = set()
+    for f in all_files:
+        if f['id'] in seen:
+            continue
+        seen.add(f['id'])
+        if not f['name'].endswith('.csv'):
+            continue
+        d = _extract_date(f['name'])
+        entry = {'id': f['id'], 'name': f['name'], 'date': d}
+        if 'E2A_HM' in f['name']:
+            e2a.append(entry)
+        elif 'E1A_HM' in f['name']:
+            e1a.append(entry)
+        elif 'ランキング' in f['name'] or 'ranking' in f['name'].lower():
+            rank.append(entry)
+
+    return {'e2a': e2a, 'e1a': e1a, 'rank': rank}
+
+
 def _extract_date(filename: str):
     """ファイル名から YYYYMMDD を抽出して datetime.date を返す。見つからなければ None"""
     m = re.search(r'(\d{8})', filename)

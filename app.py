@@ -397,6 +397,24 @@ elif report_type == '② 番宣効果検証':
     if not use_drive_excel:
         excel_upload = st.file_uploader('月間_宣伝強化番組_管理リスト.xlsx', type=['xlsx'], key='promo_excel')
 
+    # ── 番組履歴ステータス ──
+    with st.expander('📊 番組履歴データの状況（番宣の過去比較に使用）', expanded=False):
+        try:
+            from core.history_store import load_program_history_df as _load_hist
+            _hist_df = _load_hist(DRIVE_FOLDER_ID)
+            if _hist_df.empty:
+                st.warning(
+                    '⚠️ 番組別履歴データがありません。初回は過去比較なしで生成されます。\n'
+                    '過去CSVから履歴を再構築するには「④ 過去レポート取り込み」を使用してください。'
+                )
+            else:
+                _wc = _hist_df[['year', 'week_num']].drop_duplicates().shape[0] \
+                    if 'year' in _hist_df.columns and 'week_num' in _hist_df.columns else 0
+                _pc = _hist_df['program_title'].nunique() if 'program_title' in _hist_df.columns else 0
+                st.success(f'✅ {_wc}週分・{_pc}番組の履歴データが利用可能です。')
+        except Exception as _ex:
+            st.info(f'履歴データ確認中にエラー: {_ex}')
+
     if st.button('📋 番宣効果検証レポートを生成', key='gen_promo'):
         with st.spinner('番宣効果検証中...'):
             try:
@@ -677,6 +695,25 @@ elif report_type == '③ クール総括マクロ':
                 # 保管庫の04_週次サマリーJSON/から読み込み。なければ旧フォルダへフォールバック
                 all_summaries = load_summaries_from_archive(DRIVE_FOLDER_ID) or load_all_summaries(SUMMARIES_FOLDER_ID)
 
+                # manual_weekly_summary_from_pdf.csv をマージ（JSONに無い週を補完）
+                try:
+                    from core.history_store import load_manual_summary_df
+                    _manual_df = load_manual_summary_df(DRIVE_FOLDER_ID)
+                    if not _manual_df.empty:
+                        _existing_keys = {(s.get('year', 0), s.get('week_num', 0)) for s in all_summaries}
+                        _added = 0
+                        for _, _row in _manual_df.iterrows():
+                            _k = (int(_row.get('year', 0)), int(_row.get('week_num', 0)))
+                            if _k not in _existing_keys:
+                                all_summaries.append(_row.dropna().to_dict())
+                                _added += 1
+                        if _added:
+                            all_summaries.sort(key=lambda s: (s.get('year', 0), s.get('week_num', 0)))
+                            st.info(f'📄 manual_weekly_summary_from_pdf.csv から {_added}週分を補完しました。')
+                            st.caption('※ 延べ推計視聴人数はREGZAシステムによる推計値です。')
+                except Exception:
+                    pass
+
                 # 対象年 + 対象クールで絞り込み
                 year_val = int(macro_year)
                 quarter_summaries = [
@@ -737,35 +774,105 @@ elif report_type == '③ クール総括マクロ':
 
 
 # ════════════════════════════════════════
-# ④ Drive手動登録ガイド
+# ④ 過去レポート取り込み（バックフィル）
 # ════════════════════════════════════════
 elif report_type == '④ 過去レポート取り込み':
-    st.markdown("#### 📁 Drive手動登録ガイド")
+    st.markdown("#### 📁 過去レポート取り込み")
     st.markdown(
-        '<div class="status-box">Drive自動保存は行いません。①②③で生成したZIP・PDFを以下のフォルダへ手動アップロードしてください。</div>',
+        '<div class="status-box">Drive の archive / Ratings-archive フォルダ内の過去E2A CSVから番組別週次履歴を再構築します。</div>',
         unsafe_allow_html=True,
     )
+
+    # ── A. 過去CSVから履歴データを再構築 ──────────────────────────
+    st.markdown("##### 1️⃣ 過去CSVから履歴データを再構築")
+    st.markdown(
+        "Ratings フォルダおよびサブフォルダ内の E2A_HM CSV を全件読み込み、"
+        "番組別履歴JSONとサマリーJSONを生成します。"
+    )
+
+    if st.button('🔄 過去CSVから履歴データを再構築', key='btn_backfill'):
+        with st.spinner('過去CSVを読み込み中... しばらくお待ちください'):
+            try:
+                from core.backfill_history import build_history_from_archive
+                from core.export_package import build_backfill_zip
+                from datetime import date as _today_cls
+
+                result = build_history_from_archive(DRIVE_FOLDER_ID)
+                weekly   = result['weekly']
+                e2a_cnt  = result['e2a_count']
+                ok_cnt   = result['success_count']
+                skipped  = result['skipped']
+
+                if ok_cnt == 0:
+                    st.warning('⚠️ 処理できたE2Aファイルが0件でした。DriveのarchiveフォルダにE2A_HM CSVが存在するか確認してください。')
+                else:
+                    st.success(f'✅ {e2a_cnt}件中 {ok_cnt}週分の番組履歴を再構築しました。')
+
+                    if skipped:
+                        with st.expander(f'⚠️ スキップされたファイル（{len(skipped)}件）'):
+                            import pandas as pd
+                            st.dataframe(pd.DataFrame(skipped, columns=['ファイル名', '理由']),
+                                         use_container_width=True)
+
+                    zip_bytes_bf = build_backfill_zip(weekly)
+                    today_str = _today_cls.today().strftime('%Y%m%d')
+                    st.download_button(
+                        label='📦 Drive登録用ZIPをダウンロード',
+                        data=zip_bytes_bf,
+                        file_name=f'drive_upload_history_backfill_{today_str}.zip',
+                        mime='application/zip',
+                        key='dl_backfill_zip',
+                    )
+                    st.info(
+                        '解凍後、ZIPの 04_週次サマリーJSON/ と 05_番組別履歴/ の中身を\n'
+                        'Google DriveのBSよしもと_視聴率レポート保管庫へ手動アップロードしてください。'
+                    )
+
+            except Exception as _e:
+                st.markdown(f'<div class="error-box">❌ バックフィルエラー: {_e}</div>', unsafe_allow_html=True)
+                import traceback; st.code(traceback.format_exc())
+
+    st.divider()
+
+    # ── B. 過去PDF由来 手動サマリーCSVテンプレート ──────────────────
+    st.markdown("##### 2️⃣ 過去PDF由来 手動サマリーCSVテンプレート")
+    st.markdown(
+        "過去のPDFレポートからKPIを手入力するためのCSVテンプレートです。\n"
+        "記入後は `manual_weekly_summary_from_pdf.csv` という名前でDriveのratingsフォルダへアップロードしてください。\n"
+        "③クール総括マクロで自動的に読み込み、週次サマリーJSONに無い週を補完します。"
+    )
+    st.caption('※ 延べ推計視聴人数（total_all_ppl）はREGZAシステムによる推計値です。')
+
+    try:
+        from core.export_package import build_manual_summary_template_csv
+        _tmpl_csv = build_manual_summary_template_csv()
+        st.download_button(
+            label='📥 テンプレートCSVをダウンロード',
+            data=_tmpl_csv,
+            file_name='manual_weekly_summary_from_pdf.csv',
+            mime='text/csv',
+            key='dl_manual_template',
+        )
+    except Exception as _e:
+        st.error(f'テンプレート生成エラー: {_e}')
+
+    st.divider()
+
+    # ── C. Drive保管庫 フォルダ構成ガイド ───────────────────────────
+    st.markdown("##### 3️⃣ Drive保管庫 フォルダ構成")
     st.markdown("""
 ```
 BSよしもと_視聴率レポート保管庫/
-├── 01_週次レポートPDF/       ← 週次レポート PDF
-├── 02_番宣効果検証PDF/       ← 番宣効果検証 PDF
-├── 03_クール総括PDF/         ← クール総括 PDF
-├── 04_週次サマリーJSON/      ← summary_YYYY_WXX.json（ZIPに同梱）
-├── 05_番組別履歴/            ← program_weekly_YYYY_WXX.json / .csv（ZIPに同梱）
-├── 06_番宣履歴/              ← promo_YYYY_WXX.json / promo_weekly_YYYY_WXX.csv（ZIPに同梱）
-└── 99_過去レポート取り込み/  ← 過去レポートPDF（任意）
+├── 01_週次レポートPDF/       ← ①で生成したPDF
+├── 02_番宣効果検証PDF/       ← ②で生成したPDF
+├── 03_クール総括PDF/         ← ③で生成したPDF
+├── 04_週次サマリーJSON/      ← ①ZIPに同梱 / バックフィルZIPに同梱
+├── 05_番組別履歴/            ← ①ZIPに同梱 / バックフィルZIPに同梱
+├── 06_番宣履歴/              ← ②ZIPに同梱
+└── 99_過去レポート取り込み/  ← 過去レポートPDF（参照のみ・分析対象外）
 ```
 """)
-    st.markdown("""
-**手順**
-
-1. ①週次レポート または ②番宣効果検証 でレポートを生成する
-2. 「📦 Drive登録用ZIPをダウンロード」でZIPを保存する
-3. ZIPを解凍し、フォルダ名に合わせて Google Drive の対応フォルダへアップロードする
-4. 次週以降、アプリはDriveに手動アップロードされた履歴JSONを読み込んで過去比較を行う
-""")
-    st.info('クール総括マクロは、④のフォルダへ04〜06のJSONがアップロードされることで自動的にデータが揃います。')
+    st.info('PDFの保管は参照用途のみです。クール総括マクロはJSON（04〜06）のデータを分析に使用します。')
 
 
 # ── フッター ──

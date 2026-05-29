@@ -291,7 +291,7 @@ def generate_macro_html(summaries: list, quarter: int, year: int = None, promo_d
     <div class="kpi-value">{q_max:.3f}<span class="kpi-unit">%</span></div>
   </div>
   <div class="kpi-card">
-    <div class="kpi-label">延べ視聴人数（合計）</div>
+    <div class="kpi-label">延べ推計視聴人数（合計）</div>
     <div class="kpi-value" style="font-size:24px;">{total_ppl:,}<span class="kpi-unit">人</span></div>
   </div>
 </div>
