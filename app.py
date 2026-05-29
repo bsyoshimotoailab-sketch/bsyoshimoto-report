@@ -91,35 +91,107 @@ report_type = st.radio(
 
 st.divider()
 
-def _build_promo_section(items: list) -> str:
-    if not items: return ''
-    rows = ''.join(f'''<tr style="border-bottom:1px solid #2a2a35;">
-      <td style="padding:7px 8px;font-size:12px;color:#f0ede8;">{p["program"]}</td>
-      <td style="padding:7px 8px;font-size:11px;color:#f5a623;">{p["period"]}</td>
-      <td style="padding:7px 8px;font-size:11px;color:#d0ccc8;">{p["spots"]}</td>
-      <td style="padding:7px 8px;font-size:11px;color:#d0ccc8;">{p["material"]}</td>
-      <td style="text-align:right;padding:7px 8px;font-size:12px;font-weight:700;color:{"#4ade80" if p.get("viewing_ppl",0)>0 else "#7a7a8c"};">{f"{p['viewing_ppl']:,}人" if p.get("viewing_ppl",0)>0 else "—"}</td>
-      <td style="text-align:right;padding:7px 8px;font-size:11px;color:#d0ccc8;">{f"{p['viewing_dev']:,}台" if p.get("viewing_dev",0)>0 else "—"}</td>
-      <td style="padding:7px 8px;font-size:10px;color:{"#f5a623" if p.get("match_type")=="候補一致" else "#4ade80" if p.get("match_type")=="完全一致" else "#7a7a8c"};">{p.get("comment","")}</td>
-    </tr>''' for p in items[:30])
+def _build_promo_section(promo_result: dict) -> str:
+    """番宣効果検証セクションのHTML生成（PDF埋め込み用）"""
+    if not promo_result:
+        return ''
+    matched   = promo_result.get('matched', [])
+    unmatched = promo_result.get('unmatched', [])
+    sm        = promo_result.get('summary', {})
+    if not matched and not unmatched:
+        return ''
+
+    JCOLOR = {
+        '◎ 効果あり':    '#4ade80',
+        '○ やや効果あり': '#86efac',
+        '△ 横ばい':      '#fbbf24',
+        '× 効果見えず':   '#f87171',
+        '判定保留':       '#7a7a8c',
+        '今週実績のみ':   '#7a7a8c',
+    }
+
+    total   = sm.get('total_promo', len(matched) + len(unmatched))
+    effect  = sm.get('effect_found', 0)
+    summary_text = (
+        f'今週は番宣対象{total}番組のうち{len(matched)}番組で視聴データを確認。'
+        f'うち{effect}番組は過去平均を上回った。'
+    )
+
+    def _ppl(i):
+        return f"{i['viewing_ppl']:,}人" if i.get('viewing_ppl', 0) > 0 else '—'
+
+    def _dev(i):
+        return f"{i['viewing_dev']:,}台" if i.get('viewing_dev', 0) > 0 else '—'
+
+    def _past(i):
+        p = i.get('past_avg_ppl')
+        w = i.get('past_weeks', 0)
+        if not p:
+            return '—'
+        return f'{p:,}人<br><small style="color:#7a7a8c;">過去{w}週平均</small>'
+
+    def _change(i):
+        cr = i.get('change_rate')
+        if cr is None:
+            return '—'
+        c = '#4ade80' if cr > 0 else '#f87171'
+        return f'<span style="color:{c};font-weight:700;">{cr:+.1f}%</span>'
+
+    matched_rows = ''.join(f'''<tr style="border-bottom:1px solid #2a2a35;">
+      <td style="padding:6px 8px;font-size:11px;color:#f0ede8;">{i["program"]}</td>
+      <td style="padding:6px 8px;font-size:10px;color:#f5a623;">{i["period"]}</td>
+      <td style="padding:6px 8px;font-size:10px;color:#d0ccc8;">{i["spots"]}</td>
+      <td style="padding:6px 8px;font-size:10px;color:#d0ccc8;">{i["material"]}</td>
+      <td style="text-align:right;padding:6px 8px;font-size:11px;font-weight:700;color:{"#4ade80" if i.get("viewing_ppl",0)>0 else "#7a7a8c"};">{_ppl(i)}</td>
+      <td style="text-align:right;padding:6px 8px;font-size:10px;color:#d0ccc8;">{_dev(i)}</td>
+      <td style="text-align:right;padding:6px 8px;font-size:10px;color:#d0ccc8;">{_past(i)}</td>
+      <td style="text-align:right;padding:6px 8px;font-size:11px;">{_change(i)}</td>
+      <td style="padding:6px 8px;font-size:10px;font-weight:700;color:{JCOLOR.get(i.get("judgment",""), "#d0ccc8")};">{i.get("judgment","—")}</td>
+    </tr>''' for i in matched[:30])
+
+    unmatched_block = ''
+    if unmatched:
+        urows = ''.join(f'''<tr style="border-bottom:1px solid #2a2a35;">
+          <td style="padding:5px 8px;font-size:11px;color:#f0ede8;">{i["program"]}</td>
+          <td style="padding:5px 8px;font-size:10px;color:#f5a623;">{i["period"]}</td>
+          <td style="padding:5px 8px;font-size:10px;color:#d0ccc8;">{i["spots"]}</td>
+          <td style="padding:5px 8px;font-size:10px;color:#f87171;">CSVに番組が見つかりません</td>
+        </tr>''' for i in unmatched[:20])
+        unmatched_block = f'''
+        <div style="margin-top:18px;">
+          <div style="font-size:10px;letter-spacing:3px;color:#f87171;border-bottom:1px solid #2a2a35;padding-bottom:6px;margin-bottom:10px;">要確認リスト（CSV未照合）</div>
+          <table style="width:100%;border-collapse:collapse;">
+            <thead><tr style="border-bottom:1px solid #f87171;">
+              <th style="text-align:left;padding:5px 8px;color:#d0ccc8;font-size:10px;">番組名</th>
+              <th style="text-align:left;padding:5px 8px;color:#d0ccc8;font-size:10px;">番宣期間</th>
+              <th style="text-align:left;padding:5px 8px;color:#d0ccc8;font-size:10px;">SPOT</th>
+              <th style="text-align:left;padding:5px 8px;color:#d0ccc8;font-size:10px;">備考</th>
+            </tr></thead>
+            <tbody>{urows}</tbody>
+          </table>
+        </div>'''
+
     return f'''
     <div style="background:#1c1c22;border-radius:6px;padding:20px 24px;margin-bottom:24px;border:1px solid #2a2a35;">
-      <div style="font-size:10px;letter-spacing:4px;color:#f5a623;border-bottom:1px solid #2a2a35;padding-bottom:8px;margin-bottom:16px;">番宣効果モニタリング</div>
-      <div style="font-size:12px;color:#d0ccc8;margin-bottom:14px;">月間_宣伝強化番組_管理リストと今週の視聴データの照合</div>
+      <div style="font-size:10px;letter-spacing:4px;color:#f5a623;border-bottom:1px solid #2a2a35;padding-bottom:8px;margin-bottom:12px;">番宣効果検証</div>
+      <div style="font-size:12px;color:#d0ccc8;margin-bottom:14px;padding:8px 12px;background:#141418;border-radius:4px;border-left:3px solid #f5a623;">{summary_text}</div>
       <div style="overflow-x:auto;">
       <table style="width:100%;border-collapse:collapse;">
         <thead><tr style="border-bottom:1px solid #f5a623;">
-          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">番組名</th>
-          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">番宣期間</th>
-          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">SPOT回数</th>
-          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">素材</th>
-          <th style="text-align:right;padding:7px 8px;color:#d0ccc8;font-size:11px;">今週視聴人数</th>
-          <th style="text-align:right;padding:7px 8px;color:#d0ccc8;font-size:11px;">視聴機器数</th>
-          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">判定</th>
+          <th style="text-align:left;padding:6px 8px;color:#d0ccc8;font-size:10px;">番組名</th>
+          <th style="text-align:left;padding:6px 8px;color:#d0ccc8;font-size:10px;">番宣期間</th>
+          <th style="text-align:left;padding:6px 8px;color:#d0ccc8;font-size:10px;">SPOT</th>
+          <th style="text-align:left;padding:6px 8px;color:#d0ccc8;font-size:10px;">素材</th>
+          <th style="text-align:right;padding:6px 8px;color:#d0ccc8;font-size:10px;">今週視聴人数</th>
+          <th style="text-align:right;padding:6px 8px;color:#d0ccc8;font-size:10px;">視聴機器数</th>
+          <th style="text-align:right;padding:6px 8px;color:#d0ccc8;font-size:10px;">比較基準</th>
+          <th style="text-align:right;padding:6px 8px;color:#d0ccc8;font-size:10px;">増減</th>
+          <th style="text-align:left;padding:6px 8px;color:#d0ccc8;font-size:10px;">判定</th>
         </tr></thead>
-        <tbody>{rows}</tbody>
+        <tbody>{matched_rows}</tbody>
       </table>
       </div>
+      {unmatched_block}
     </div>'''
 
 
@@ -311,7 +383,10 @@ elif report_type == '② 番宣効果検証':
                     analyze_jimoto, detect_week_info, calculate_total_ppl,
                     find_specific_programs, find_ytube_programs, generate_html,
                 )
-                from core.drive_helper import get_latest_csv_files, get_excel_file, _extract_date
+                from core.drive_helper import (
+                    get_latest_csv_files, get_excel_file, _extract_date,
+                    load_all_summaries,
+                )
                 from core.charts import generate_all_charts as _gen_charts
                 from core.embed_charts import embed_charts_into_html
                 from core.make_pdf import generate_pdf_from_html_string
@@ -403,42 +478,79 @@ elif report_type == '② 番宣効果検証':
                     ytube_data=ytube,
                 )
 
+                # ── 過去サマリー読み込み（過去比較用） ──
+                st.info('過去データ読み込み中...')
+                try:
+                    past_sums = load_all_summaries(SUMMARIES_FOLDER_ID)
+                except Exception:
+                    past_sums = []
+
                 # ── 番宣効果照合 ──
                 st.info('番宣Excelと照合中...')
                 try:
-                    promo_items = build_promo_items(df_e2a, excel_path, week_start=ws, week_end=we)
+                    promo_result = build_promo_items(
+                        df_e2a, excel_path,
+                        week_start=ws, week_end=we,
+                        past_summaries=past_sums,
+                    )
                 except ValueError as ve:
                     st.error(str(ve))
                     st.stop()
 
-                # ── 画面に結果表示 ──
-                if promo_items:
-                    import pandas as pd
-                    exact    = [i for i in promo_items if i['match_type'] == '完全一致']
-                    partial  = [i for i in promo_items if i['match_type'] == '候補一致']
-                    no_match = [i for i in promo_items if i['match_type'] == '不一致']
-                    st.markdown(
-                        f"**今週の番宣対象番組: {len(promo_items)}件** "
-                        f"（完全一致: {len(exact)} / 候補一致: {len(partial)} / 不一致: {len(no_match)}）"
-                    )
-                    rows_disp = [{
-                        '番組名':         i['program'],
-                        '番宣期間':       i['period'],
-                        'SPOT回数':       i['spots'],
-                        '制作素材':       i['material'],
-                        '今週視聴人数':   f"{i['viewing_ppl']:,}人" if i['viewing_ppl'] else '—',
-                        '今週視聴機器数': f"{i['viewing_dev']:,}台" if i['viewing_dev'] else '—',
-                        '照合':           i['match_type'],
-                        '判定':           i['comment'],
-                    } for i in promo_items]
+                # ── 画面にサマリー表示 ──
+                import pandas as pd
+                sm = promo_result.get('summary', {})
+                matched_items   = promo_result.get('matched', [])
+                unmatched_items = promo_result.get('unmatched', [])
+                unk_items       = promo_result.get('unknown_period', [])
+
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric('番宣対象',   f"{sm.get('total_promo', 0)}件")
+                c2.metric('CSV照合成功', f"{sm.get('csv_matched', 0)}件")
+                c3.metric('効果あり',   f"{sm.get('effect_found', 0)}件")
+                c4.metric('判定保留',   f"{sm.get('pending', 0)}件")
+                c5.metric('要確認',     f"{sm.get('needs_check', 0)}件")
+
+                # ── メイン表（完全一致・候補一致） ──
+                if matched_items:
+                    st.markdown('**番宣効果検証（今週番宣期間対象）**')
+                    rows_disp = []
+                    for i in matched_items:
+                        cr = i.get('change_rate')
+                        rows_disp.append({
+                            '番組名':    i['program'],
+                            '番宣期間':  i['period'],
+                            'SPOT':      i['spots'],
+                            '素材':      i['material'],
+                            '今週視聴人数':   f"{i['viewing_ppl']:,}人" if i['viewing_ppl'] else '—',
+                            '視聴機器数':     f"{i['viewing_dev']:,}台" if i['viewing_dev'] else '—',
+                            '比較基準':       f"{i['past_avg_ppl']:,}人(過去{i['past_weeks']}週)" if i.get('past_avg_ppl') else '—',
+                            '増減':           f"{cr:+.1f}%" if cr is not None else '—',
+                            '判定':           i.get('judgment', '—'),
+                        })
                     st.dataframe(pd.DataFrame(rows_disp), use_container_width=True)
-                    if partial:
-                        st.warning(f"⚠️ 候補一致が {len(partial)} 件あります。番組名の表記ゆれを確認してください。")
-                    if no_match:
-                        st.info(f"ℹ️ {len(no_match)} 件はCSVに番組が見つかりませんでした（今週未放送の可能性）。")
+                    cands = [i for i in matched_items if i['match_type'] == '候補一致']
+                    if cands:
+                        st.warning(f"⚠️ 候補一致が {len(cands)} 件あります。番組名の表記ゆれを確認してください。")
                 else:
                     st.info('今週の番宣期間に該当する番組がありませんでした。')
-                    promo_items = []
+
+                # ── 要確認リスト（不一致） ──
+                if unmatched_items:
+                    with st.expander(f'⚠️ 要確認リスト（CSV未照合: {len(unmatched_items)}件）'):
+                        urows = [{'番組名': i['program'], '番宣期間': i['period'],
+                                  'SPOT': i['spots'], '備考': 'CSVに番組が見つかりません'}
+                                 for i in unmatched_items]
+                        st.dataframe(pd.DataFrame(urows), use_container_width=True)
+
+                # ── 番宣期間未設定リスト ──
+                if unk_items:
+                    with st.expander(f'ℹ️ 番宣期間未設定（{len(unk_items)}件）'):
+                        st.dataframe(
+                            pd.DataFrame([{'番組名': i['program'], 'SPOT': i['spots']}
+                                          for i in unk_items]),
+                            use_container_width=True,
+                        )
 
                 # ── PDF生成 ──
                 st.info('PDF生成中...')
@@ -446,7 +558,7 @@ elif report_type == '② 番宣効果検証':
                 template_path = str(ROOT / 'template.html')
                 html = generate_html(data, template_path, None)
                 html = embed_charts_into_html(html, chart_imgs)
-                promo_html = _build_promo_section(promo_items)
+                promo_html = _build_promo_section(promo_result)
                 html = html.replace('<div class="footer">', promo_html + '<div class="footer">')
 
                 pdf_bytes = generate_pdf_from_html_string(html)
@@ -463,9 +575,12 @@ elif report_type == '② 番宣効果検証':
                     from core.drive_helper import save_weekly_summary as _save_sum
                     _year_p = we.year if we else datetime.now().year
                     _ws_p   = (we - timedelta(days=6)) if we else None
+                    # matched + unmatched をフラット化して保存
+                    _all_promo = (promo_result.get('matched', [])
+                                  + promo_result.get('unmatched', []))
                     _promo_save = [
                         {k: v for k, v in item.items() if k != 'match_title'}
-                        for item in promo_items
+                        for item in _all_promo
                     ]
                     _sum_p = {
                         'year':                _year_p,

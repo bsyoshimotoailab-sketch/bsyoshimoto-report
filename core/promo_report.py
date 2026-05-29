@@ -32,8 +32,8 @@ def normalize_program_name(name: str) -> str:
     if not isinstance(name, str):
         return ''
     name = name.strip()
-    name = name.replace('　', '').replace(' ', '')    # 全角・半角スペース削除
-    name = name.replace('（', '(').replace('）', ')')  # 括弧を半角統一
+    name = name.replace('　', '').replace(' ', '')
+    name = name.replace('（', '(').replace('）', ')')
     name = name.replace('【', '[').replace('】', ']')
     name = name.replace('・', '').replace('～', '〜')
     return name
@@ -42,7 +42,7 @@ def normalize_program_name(name: str) -> str:
 def _parse_promo_period(period_str: str):
     """
     番宣期間文字列から (start_date, end_date) を返す。
-    例: "5/12〜5/18", "2026/5/12〜5/18", "5/12-5/18"
+    例: "5/12〜5/18", "2026/5/12〜5/18"
     解析失敗時は (None, None)
     """
     if not isinstance(period_str, str) or not period_str.strip() or period_str == 'nan':
@@ -64,20 +64,70 @@ def _parse_promo_period(period_str: str):
     return None, None
 
 
-def build_promo_items(df_e2a, excel_path: str, week_start=None, week_end=None) -> list:
+def _get_past_avg(program: str, past_summaries: list) -> tuple:
     """
-    番宣ExcelとE2A CSVを照合してpromo_itemsリストを返す。
+    過去summaryから同一番組の視聴人数平均を返す。
+    Returns: (past_avg_ppl: int | None, past_weeks: int)
+    """
+    if not past_summaries:
+        return None, 0
 
-    Returns: list of dict {
-        program, period, spots, material,
-        viewing_ppl, viewing_dev,
-        match_type ('完全一致'|'候補一致'|'不一致'),
-        match_title, comment
+    norm_prog = normalize_program_name(program)
+    past_ppls = []
+
+    for s in past_summaries:
+        for item in s.get('promo_items', []):
+            if normalize_program_name(item.get('program', '')) == norm_prog:
+                ppl = item.get('viewing_ppl', 0)
+                if ppl and ppl > 0:
+                    past_ppls.append(ppl)
+                break  # 1 summary に同番組は1エントリ
+
+    if not past_ppls:
+        return None, 0
+    return int(sum(past_ppls) / len(past_ppls)), len(past_ppls)
+
+
+def _compute_judgment(viewing_ppl: int, past_avg_ppl, past_weeks: int) -> tuple:
+    """
+    Returns (judgment: str, judgment_detail: str, change_rate: float | None)
+    """
+    if viewing_ppl == 0:
+        return '判定保留', '今週視聴データなし', None
+    if not past_avg_ppl or past_avg_ppl == 0:
+        return '今週実績のみ', '比較対象不足', None
+    change_rate = (viewing_ppl - past_avg_ppl) / past_avg_ppl * 100
+    detail = f'過去{past_weeks}週平均比 {change_rate:+.1f}%'
+    if change_rate >= 20:
+        return '◎ 効果あり', detail, change_rate
+    elif change_rate >= 5:
+        return '○ やや効果あり', detail, change_rate
+    elif change_rate >= -5:
+        return '△ 横ばい', detail, change_rate
+    else:
+        return '× 効果見えず', detail, change_rate
+
+
+def build_promo_items(df_e2a, excel_path: str, week_start=None, week_end=None,
+                      past_summaries=None) -> dict:
+    """
+    番宣ExcelとE2A CSVを照合してpromo結果dictを返す。
+
+    Returns: {
+        'matched':        [item, ...],  # 完全一致・候補一致 + 今週番宣期間に重なる
+        'unmatched':      [item, ...],  # 不一致（要確認リスト）
+        'unknown_period': [item, ...],  # 番宣期間空欄の番組
+        'summary': {
+            'total_promo':  int,
+            'csv_matched':  int,
+            'effect_found': int,
+            'pending':      int,
+            'needs_check':  int,
+        }
     }
     """
     import pandas as pd
 
-    # Excel読み込み（シートなし・読み込み失敗を明示）
     try:
         xl = pd.read_excel(excel_path, sheet_name='サマリー', dtype=str).dropna(subset=['番組名'])
     except Exception as e:
@@ -94,23 +144,22 @@ def build_promo_items(df_e2a, excel_path: str, week_start=None, week_end=None) -
                   re.search(r'\d{1,2}/\d{1,2}', str(c)) or
                   re.fullmatch(r'\d{8}', str(c).strip())]
 
-    # E2A から視聴行を事前抽出
     ppl_df = df_e2a[df_e2a[metric_col].str.strip() == 'value_1_31'].copy()
     dev_df = df_e2a[df_e2a[metric_col].str.strip() == 'E1A_HM_ツールヒント用列値_視聴機器数_12'].copy()
 
-    # E2A 番組名を正規化してマップ化（正規化後 → 元の番組名）
-    e2a_titles   = df_e2a[name_col].dropna().unique().tolist()
     e2a_norm_map = {}
-    for t in e2a_titles:
+    for t in df_e2a[name_col].dropna().unique():
         key = normalize_program_name(t)
         if key:
             e2a_norm_map[key] = t
 
-    # week_start/end を date 型に統一
     ws_date = to_date_safe(week_start)
     we_date = to_date_safe(week_end)
 
-    items = []
+    matched        = []
+    unmatched      = []
+    unknown_period = []
+
     for _, row in xl.iterrows():
         program  = str(row.get('番組名', '')).strip()
         period   = str(row.get('重点強化期間', '')).strip()
@@ -120,37 +169,51 @@ def build_promo_items(df_e2a, excel_path: str, week_start=None, week_end=None) -
         if not program or program == 'nan':
             continue
 
-        # 番宣期間チェック（今週と重ならなければスキップ）
-        period_comment = None
-        if ws_date and we_date and period not in ('nan', '—', ''):
-            p_start, p_end = _parse_promo_period(period)
-            # date 型に揃える（_parse_promo_period は既に date を返すが念のため）
-            p_start = to_date_safe(p_start)
-            p_end   = to_date_safe(p_end)
-            if p_start and p_end and ws_date and we_date:
-                if not (isinstance(we_date, _date) and isinstance(p_start, _date)):
-                    period_comment = '番宣期間を確認してください'
-                elif we_date < p_start or ws_date > p_end:
-                    continue
-            else:
-                period_comment = '番宣期間を確認してください'
+        spots_val    = spots    if spots    not in ('nan', '') else '—'
+        material_val = material if material not in ('nan', '') else '—'
+
+        # 番宣期間が空欄 → unknown_period へ（メイン表に出さない）
+        period_clean = period if period not in ('nan', '—', '', 'None') else ''
+        if not period_clean:
+            norm = normalize_program_name(program)
+            mt = '不一致'
+            if norm in e2a_norm_map:
+                mt = '完全一致'
+            elif len(norm) >= 4:
+                cands = [orig for key, orig in e2a_norm_map.items()
+                         if norm[:8] in key or key[:8] in norm]
+                if cands:
+                    mt = '候補一致'
+            unknown_period.append({
+                'program': program, 'period': '—',
+                'spots': spots_val, 'material': material_val,
+                'match_type': mt, 'comment': '番宣期間未設定',
+            })
+            continue
+
+        # 今週との重なりチェック
+        p_start, p_end = _parse_promo_period(period_clean)
+        p_start = to_date_safe(p_start)
+        p_end   = to_date_safe(p_end)
+
+        if ws_date and we_date and p_start and p_end:
+            if isinstance(we_date, _date) and isinstance(p_start, _date):
+                if we_date < p_start or ws_date > p_end:
+                    continue  # 今週と重ならない → スキップ
 
         # 番組名照合
         norm = normalize_program_name(program)
         match_type  = '不一致'
         match_title = ''
-
         if norm in e2a_norm_map:
             match_type  = '完全一致'
             match_title = e2a_norm_map[norm]
         elif len(norm) >= 4:
-            candidates = [
-                orig for key, orig in e2a_norm_map.items()
-                if norm[:8] in key or key[:8] in norm
-            ]
-            if candidates:
+            cands = [orig for key, orig in e2a_norm_map.items()
+                     if norm[:8] in key or key[:8] in norm]
+            if cands:
                 match_type  = '候補一致'
-                match_title = candidates[0]
+                match_title = cands[0]
 
         # 視聴データ集計
         viewing_ppl = 0
@@ -161,7 +224,6 @@ def build_promo_items(df_e2a, excel_path: str, week_start=None, week_end=None) -
                 for col in date_cols:
                     v = pd.to_numeric(ppl_rows[col], errors='coerce').dropna()
                     viewing_ppl += int(float(v[v > 0].sum()) * 1000)
-
                 dev_rows = dev_df[dev_df[name_col] == match_title]
                 for col in date_cols:
                     v = pd.to_numeric(dev_rows[col], errors='coerce').dropna()
@@ -169,27 +231,46 @@ def build_promo_items(df_e2a, excel_path: str, week_start=None, week_end=None) -
             except Exception:
                 pass
 
-        # 判定コメント
-        if period_comment:
-            comment = period_comment
-        elif viewing_ppl > 0:
-            tag     = '✅' if match_type == '完全一致' else '⚠️ 候補'
-            comment = f'{tag} {viewing_ppl:,}人 / {viewing_dev:,}台'
-        elif match_title:
-            comment = '今週未放送（または視聴データなし）'
+        # 過去比較と判定
+        past_avg_ppl, past_weeks = _get_past_avg(program, past_summaries)
+        judgment, judgment_detail, change_rate = _compute_judgment(
+            viewing_ppl, past_avg_ppl, past_weeks
+        )
+
+        item = {
+            'program':         program,
+            'period':          period_clean,
+            'spots':           spots_val,
+            'material':        material_val,
+            'viewing_ppl':     viewing_ppl,
+            'viewing_dev':     viewing_dev,
+            'match_type':      match_type,
+            'match_title':     match_title,
+            'past_avg_ppl':    past_avg_ppl,
+            'past_weeks':      past_weeks,
+            'change_rate':     change_rate,
+            'judgment':        judgment,
+            'judgment_detail': judgment_detail,
+            'comment':         judgment,  # 後方互換
+        }
+
+        if match_type in ('完全一致', '候補一致'):
+            matched.append(item)
         else:
-            comment = 'CSVに番組が見つかりません'
+            unmatched.append(item)
 
-        items.append({
-            'program':     program,
-            'period':      period   if period   not in ('nan', '') else '—',
-            'spots':       spots    if spots    not in ('nan', '') else '—',
-            'material':    material if material not in ('nan', '') else '—',
-            'viewing_ppl': viewing_ppl,
-            'viewing_dev': viewing_dev,
-            'match_type':  match_type,
-            'match_title': match_title,
-            'comment':     comment,
-        })
+    effect_found = sum(1 for i in matched if i['judgment'] in ('◎ 効果あり', '○ やや効果あり'))
+    pending      = sum(1 for i in matched if i['judgment'] in ('判定保留', '今週実績のみ'))
 
-    return items
+    return {
+        'matched':        matched,
+        'unmatched':      unmatched,
+        'unknown_period': unknown_period,
+        'summary': {
+            'total_promo':  len(matched) + len(unmatched),
+            'csv_matched':  len(matched),
+            'effect_found': effect_found,
+            'pending':      pending,
+            'needs_check':  len(unmatched),
+        },
+    }
