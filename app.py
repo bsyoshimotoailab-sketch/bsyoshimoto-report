@@ -70,6 +70,27 @@ st.markdown("""
 DRIVE_FOLDER_ID     = '1JIKlOBc42pUTHhHaShInWo_YT_9-GmrJ'
 SUMMARIES_FOLDER_ID = st.secrets.get('summaries_folder_id', DRIVE_FOLDER_ID) if hasattr(st, 'secrets') else DRIVE_FOLDER_ID
 
+
+def _is_quota_error(e: Exception) -> bool:
+    s = str(e)
+    return 'storageQuotaExceeded' in s or 'Service Accounts do not have storage quota' in s
+
+
+def _drive_save_warning(label: str, e: Exception):
+    """Drive保存失敗時の統一警告表示。quotaエラーは専用メッセージ。"""
+    import traceback
+    if _is_quota_error(e):
+        st.warning(
+            f'⚠️ {label}：PDF生成は完了しましたが、Drive保存に失敗しました。\n\n'
+            '**原因**：現在の保存先がマイドライブ配下のため、サービスアカウントでは書き込みできません。\n\n'
+            '**対処**：共有ドライブ配下のratingsフォルダを保存先にしてください。'
+        )
+    else:
+        st.warning(f'⚠️ {label}に失敗しました：{e}')
+        with st.expander('詳細（エラーログ）'):
+            st.code(traceback.format_exc())
+
+
 # ── Drive接続確認 ──
 @st.cache_resource
 def get_drive():
@@ -92,15 +113,33 @@ report_type = st.radio(
 st.divider()
 
 # ── Drive保管庫 自動確認（セッション1回） ──
-if 'archive_initialized' not in st.session_state:
+if 'archive_init_status' not in st.session_state:
     try:
         from core.history_store import initialize_archive
         initialize_archive(DRIVE_FOLDER_ID)
-        st.session_state['archive_initialized'] = True
-        st.caption('Drive保存先：確認済み')
+        st.session_state['archive_init_status'] = 'ok'
     except Exception as _init_err:
-        st.session_state['archive_initialized'] = False
-        st.warning(f'⚠️ Driveレポート保管庫の確認に失敗しました。管理者に確認してください。（{_init_err}）')
+        _init_err_str = str(_init_err)
+        if _is_quota_error(_init_err):
+            st.session_state['archive_init_status'] = 'quota_error'
+        else:
+            st.session_state['archive_init_status'] = 'error'
+        st.session_state['archive_init_err'] = _init_err_str
+
+_init_status = st.session_state.get('archive_init_status', 'ok')
+if _init_status == 'ok':
+    st.caption('Drive保存先：確認済み')
+elif _init_status == 'quota_error':
+    st.caption('Drive保存先：読み取りOK／書き込み未確認')
+    st.warning(
+        '⚠️ Drive保存先がマイドライブ配下のため、サービスアカウントでは書き込みできません。\n\n'
+        '共有ドライブ配下のratingsフォルダをDRIVE_FOLDER_IDに設定してください。'
+    )
+else:
+    st.warning(
+        '⚠️ Driveレポート保管庫の確認に失敗しました。管理者に確認してください。\n\n'
+        f'{st.session_state.get("archive_init_err", "")}'
+    )
 
 
 def _build_promo_section(promo_result: dict) -> str:
@@ -362,7 +401,7 @@ if report_type == '① 週次レポート':
                     save_weekly_summary(SUMMARIES_FOLDER_ID, _year, week_num, summary)
                     st.markdown(f'<div class="status-box">✅ summary_{_year}_W{week_num:02d}.json を保存しました</div>', unsafe_allow_html=True)
                 except Exception as _e:
-                    st.warning(f'summary保存エラー: {_e}')
+                    _drive_save_warning('サマリーJSON保存', _e)
 
                 # 番組別週次実績
                 try:
@@ -373,7 +412,7 @@ if report_type == '① 週次レポート':
                     st.markdown(f'<div class="status-box">✅ Drive保存：{ph["json_file"]} を{ph["json_action"]}しました（{ph["records"]}番組）</div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="status-box">✅ Drive保存：program_history_all.csv を{ph["csv_action"]}しました</div>', unsafe_allow_html=True)
                 except Exception as _e:
-                    st.warning(f'番組履歴保存エラー: {_e}')
+                    _drive_save_warning('番組履歴保存', _e)
 
                 # 週次PDF を Drive に保存
                 try:
@@ -382,7 +421,7 @@ if report_type == '① 週次レポート':
                     _pr = _save_pdf(DRIVE_FOLDER_ID, 'weekly', _pdf_name, pdf_bytes)
                     st.markdown(f'<div class="status-box">✅ Drive保存：{_pdf_name} を{_pr["action_label"]}しました</div>', unsafe_allow_html=True)
                 except Exception as _e:
-                    st.warning(f'PDF Drive保存エラー: {_e}')
+                    _drive_save_warning('週次PDF Drive保存', _e)
 
                 st.success(f'✅ WEEK {week_num} レポート生成完了！')
                 st.download_button(
@@ -624,7 +663,7 @@ elif report_type == '② 番宣効果検証':
                     _pr2 = _save_pdf2(DRIVE_FOLDER_ID, 'promo', _promo_pdf_name, pdf_bytes)
                     st.markdown(f'<div class="status-box">✅ Drive保存：{_promo_pdf_name} を{_pr2["action_label"]}しました</div>', unsafe_allow_html=True)
                 except Exception as _e:
-                    st.warning(f'番宣PDF保存エラー: {_e}')
+                    _drive_save_warning('番宣PDF Drive保存', _e)
 
                 # 番宣履歴をpromo_historyに保存
                 try:
@@ -654,7 +693,7 @@ elif report_type == '② 番宣効果検証':
                     st.markdown(f'<div class="status-box">✅ Drive保存：{ph["json_file"]} を{ph["json_action"]}しました</div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="status-box">✅ Drive保存：promo_history_all.csv を{ph["csv_action"]}しました</div>', unsafe_allow_html=True)
                 except Exception as _e:
-                    st.warning(f'番宣履歴保存エラー: {_e}')
+                    _drive_save_warning('番宣履歴保存', _e)
 
                 # 後方互換：summaryにもpromo_itemsを保存
                 try:
@@ -758,7 +797,7 @@ elif report_type == '③ クール総括マクロ':
                     _mr = _save_macro_pdf(DRIVE_FOLDER_ID, 'macro', _macro_name, pdf_bytes)
                     st.markdown(f'<div class="status-box">✅ Drive保存：{_macro_name} を{_mr["action_label"]}しました</div>', unsafe_allow_html=True)
                 except Exception as _e:
-                    st.warning(f'PDF Drive保存エラー: {_e}')
+                    _drive_save_warning('クール総括PDF Drive保存', _e)
 
                 st.success(f'✅ {year_val}年 第{quarter}クール マクロレポート生成完了！')
                 st.download_button(

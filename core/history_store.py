@@ -34,14 +34,19 @@ _folder_cache: dict = {}
 # ── フォルダ取得・作成 ────────────────────────────────
 
 def _get_or_create_folder_with_action(parent_id: str, name: str, service) -> tuple:
-    """parent_id 直下に name フォルダを取得または作成。Returns: (folder_id, action)"""
+    """parent_id 直下に name フォルダを取得または作成（共有ドライブ対応）。Returns: (folder_id, action)"""
     cache_key = f'{parent_id}/{name}'
     if cache_key in _folder_cache:
         return _folder_cache[cache_key], 'existing'
 
     q = (f"'{parent_id}' in parents and name='{name}' "
          f"and mimeType='application/vnd.google-apps.folder' and trashed=false")
-    res = service.files().list(q=q, fields='files(id)').execute()
+    res = service.files().list(
+        q=q,
+        fields='files(id)',
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
     files = res.get('files', [])
     if files:
         fid = files[0]['id']
@@ -52,7 +57,11 @@ def _get_or_create_folder_with_action(parent_id: str, name: str, service) -> tup
             'mimeType': 'application/vnd.google-apps.folder',
             'parents': [parent_id],
         }
-        fid = service.files().create(body=meta, fields='id').execute()['id']
+        fid = service.files().create(
+            body=meta,
+            fields='id',
+            supportsAllDrives=True,
+        ).execute()['id']
         action = 'created'
 
     _folder_cache[cache_key] = fid

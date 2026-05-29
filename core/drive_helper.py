@@ -50,7 +50,7 @@ def get_drive_service():
 
 
 def list_files_in_folder(folder_id: str, name_contains: str = None) -> list:
-    """フォルダ内のファイル一覧を取得"""
+    """フォルダ内のファイル一覧を取得（共有ドライブ対応）"""
     service = get_drive_service()
     query = f"'{folder_id}' in parents and trashed=false"
     if name_contains:
@@ -60,15 +60,17 @@ def list_files_in_folder(folder_id: str, name_contains: str = None) -> list:
         orderBy='createdTime desc',
         fields='files(id, name, mimeType, createdTime, modifiedTime)',
         pageSize=200,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
     return results.get('files', [])
 
 
 def download_file(file_id: str) -> bytes:
-    """ファイルをバイト列でダウンロード"""
+    """ファイルをバイト列でダウンロード（共有ドライブ対応）"""
     from googleapiclient.http import MediaIoBaseDownload
     service = get_drive_service()
-    request = service.files().get_media(fileId=file_id)
+    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
@@ -89,7 +91,7 @@ def download_to_tempfile(file_id: str, suffix: str = '.csv') -> str:
 def upload_file(folder_id: str, filename: str, data: bytes,
                 mime_type: str = 'application/octet-stream') -> dict:
     """
-    ファイルをフォルダにアップロード。同名ファイルがあれば上書き。
+    ファイルをフォルダにアップロード。同名ファイルがあれば上書き。共有ドライブ対応。
     Returns: {'id': str, 'action': 'created' | 'updated'}
     """
     from googleapiclient.http import MediaIoBaseUpload
@@ -105,6 +107,7 @@ def upload_file(folder_id: str, filename: str, data: bytes,
         result = service.files().update(
             fileId=existing[0]['id'],
             media_body=media,
+            supportsAllDrives=True,
         ).execute()
         return {'id': result.get('id', existing[0]['id']), 'action': 'updated'}
     else:
@@ -112,6 +115,7 @@ def upload_file(folder_id: str, filename: str, data: bytes,
             body=file_metadata,
             media_body=media,
             fields='id',
+            supportsAllDrives=True,
         ).execute()
         return {'id': result.get('id'), 'action': 'created'}
 
@@ -239,6 +243,8 @@ def get_excel_file(folder_id: str) -> dict:
         orderBy='modifiedTime desc',
         fields='files(id, name, mimeType, modifiedTime)',
         pageSize=20,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
     files = results.get('files', [])
 
