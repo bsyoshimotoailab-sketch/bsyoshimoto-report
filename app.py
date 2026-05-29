@@ -174,6 +174,8 @@ if report_type == '① 週次レポート':
                     rank_path = csv_files['rank'][0]['path']
                     file_names = [f['name'] for f in csv_files['e1a']] + [csv_files['e2a'][0]['name'], csv_files['rank'][0]['name']]
                     st.markdown(f'<div class="status-box">取得完了: {", ".join(file_names)}</div>', unsafe_allow_html=True)
+                    for w in csv_files.get('warnings', []):
+                        st.warning(w)
                 else:
                     if not uploaded_e1a or not uploaded_e2a or not uploaded_rank:
                         st.error('全ファイルを選択してください（E1A×7本、E2A×1本、ランキング×1本）')
@@ -329,6 +331,8 @@ elif report_type == '② 番宣効果検証':
                 rank_path = csv_files['rank'][0]['path']
                 file_names = [f['name'] for f in csv_files['e1a']] + [csv_files['e2a'][0]['name'], csv_files['rank'][0]['name']]
                 st.markdown(f'<div class="status-box">CSV取得完了: {", ".join(file_names)}</div>', unsafe_allow_html=True)
+                for w in csv_files.get('warnings', []):
+                    st.warning(w)
 
                 # week_end / week_start をE2Aファイル名から取得
                 we = _extract_date(csv_files['e2a'][0]['name'])

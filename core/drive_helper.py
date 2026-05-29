@@ -130,14 +130,22 @@ def get_latest_csv_files(folder_id: str) -> dict:
     """
     ratingsフォルダからファイル名のYYYYMMDDを元に最新週のCSVを取得。
     基準：E2A_HM の最新日付を week_end、week_end-6日を week_start とし、
-    その範囲のE1A 7本・E2A 1本・ランキング 1本を返す。
-    Returns: {'e1a': [{'path':..., 'name':...}, ...], 'e2a': [...], 'rank': [...]}
+    その範囲のE1A（5本以上）・E2A 1本・ランキング 1本を返す。
+
+    Returns: {
+        'e1a':       [{'path':..., 'name':...}, ...],
+        'e2a':       [{'path':..., 'name':...}],
+        'rank':      [{'path':..., 'name':...}],
+        'warnings':  ['E1Aは7本中6本で生成します。不足: 20260525'],
+        'week_start': 'YYYYMMDD',
+        'week_end':   'YYYYMMDD',
+    }
     """
     files = list_files_in_folder(folder_id, name_contains='.csv')
 
-    e1a_all   = [f for f in files if 'E1A_HM' in f['name']]
-    e2a_all   = [f for f in files if 'E2A_HM' in f['name']]
-    rank_all  = [f for f in files if 'ランキング' in f['name'] or 'ranking' in f['name'].lower()]
+    e1a_all  = [f for f in files if 'E1A_HM' in f['name']]
+    e2a_all  = [f for f in files if 'E2A_HM' in f['name']]
+    rank_all = [f for f in files if 'ランキング' in f['name'] or 'ranking' in f['name'].lower()]
 
     # ── 最新E2A日付を week_end とする ──
     e2a_dated = [(f, _extract_date(f['name'])) for f in e2a_all]
@@ -148,21 +156,30 @@ def get_latest_csv_files(folder_id: str) -> dict:
     week_end   = e2a_dated[0][1]
     week_start = week_end - timedelta(days=6)
 
-    # ── E1A: week_start〜week_end の7日分 ──
+    # ── E1A: week_start〜week_end の範囲で取得（5本未満なら停止、5〜6本はwarning） ──
     e1a_in_range = [
         f for f in e1a_all
         if _extract_date(f['name']) is not None
         and week_start <= _extract_date(f['name']) <= week_end
     ]
-    if len(e1a_in_range) != 7:
-        needed     = [(week_start + timedelta(days=i)).strftime('%Y%m%d') for i in range(7)]
+    e1a_in_range.sort(key=lambda f: _extract_date(f['name']))
+
+    warnings = []
+    if len(e1a_in_range) < 5:
+        needed      = [(week_start + timedelta(days=i)).strftime('%Y%m%d') for i in range(7)]
         found_names = [f['name'] for f in e1a_in_range]
         raise ValueError(
-            f"E1Aファイルが7本揃っていません（{len(e1a_in_range)}本）。\n"
+            f"E1Aファイルが不足しています（{len(e1a_in_range)}本）。5本以上必要です。\n"
             f"必要な日付: {', '.join(needed)}\n"
             f"見つかったファイル: {', '.join(found_names) if found_names else 'なし'}"
         )
-    e1a_in_range.sort(key=lambda f: _extract_date(f['name']))
+    if len(e1a_in_range) < 7:
+        all_dates   = {(week_start + timedelta(days=i)).strftime('%Y%m%d') for i in range(7)}
+        found_dates = {_extract_date(f['name']).strftime('%Y%m%d') for f in e1a_in_range}
+        missing     = sorted(all_dates - found_dates)
+        warnings.append(
+            f"E1Aは7本中{len(e1a_in_range)}本で生成します。不足: {', '.join(missing)}"
+        )
 
     # ── E2A: week_end と同日付の1本 ──
     e2a_match = [f for f, d in e2a_dated if d == week_end]
@@ -177,7 +194,14 @@ def get_latest_csv_files(folder_id: str) -> dict:
     if not rank_match:
         raise ValueError(f"ランキングCSVの {week_end.strftime('%Y%m%d')} が見つかりません。")
 
-    result = {'e1a': [], 'e2a': [], 'rank': []}
+    result = {
+        'e1a':        [],
+        'e2a':        [],
+        'rank':       [],
+        'warnings':   warnings,
+        'week_start': week_start.strftime('%Y%m%d'),
+        'week_end':   week_end.strftime('%Y%m%d'),
+    }
 
     for f in e1a_in_range:
         tmp_path = download_to_tempfile(f['id'], suffix='.csv')
