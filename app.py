@@ -85,7 +85,7 @@ st.markdown("### 作成するレポートを選択してください")
 
 report_type = st.radio(
     '',
-    options=['① 週次レポート', '② 番宣効果検証', '③ クール総括マクロ', '④ 過去レポート取り込み'],
+    options=['① 最新週次レポート', '② 番宣効果検証', '③ クール総括マクロ', '④ 過去レポート取り込み（肥後用）'],
     horizontal=True,
     label_visibility='collapsed',
 )
@@ -200,7 +200,7 @@ def _build_promo_section(promo_result: dict) -> str:
 # ════════════════════════════════════════
 # ① 週次レポート
 # ════════════════════════════════════════
-if report_type == '① 週次レポート':
+if report_type == '① 最新週次レポート':
     st.markdown("#### 📊 週次レポート生成")
     st.markdown('<div class="status-box">Google Driveから最新CSVを自動取得してPDFレポートを生成します。</div>', unsafe_allow_html=True)
 
@@ -776,7 +776,7 @@ elif report_type == '③ クール総括マクロ':
 # ════════════════════════════════════════
 # ④ 過去レポート取り込み（バックフィル）
 # ════════════════════════════════════════
-elif report_type == '④ 過去レポート取り込み':
+elif report_type == '④ 過去レポート取り込み（肥後用）':
     st.markdown("#### 📁 過去レポート取り込み")
     st.markdown(
         '<div class="status-box">Drive の archive / Ratings-archive フォルダ内の過去E2A CSVから番組別週次履歴を再構築します。</div>',
