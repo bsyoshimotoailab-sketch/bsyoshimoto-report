@@ -98,8 +98,10 @@ def _build_promo_section(items: list) -> str:
       <td style="padding:7px 8px;font-size:11px;color:#f5a623;">{p["period"]}</td>
       <td style="padding:7px 8px;font-size:11px;color:#d0ccc8;">{p["spots"]}</td>
       <td style="padding:7px 8px;font-size:11px;color:#d0ccc8;">{p["material"]}</td>
-      <td style="text-align:right;padding:7px 8px;font-size:12px;font-weight:700;color:{"#4ade80" if p["viewing"]>0 else "#7a7a8c"};">{f"{p['viewing']:,}人" if p["viewing"]>0 else "計測中"}</td>
-    </tr>''' for p in items[:20])
+      <td style="text-align:right;padding:7px 8px;font-size:12px;font-weight:700;color:{"#4ade80" if p.get("viewing_ppl",0)>0 else "#7a7a8c"};">{f"{p['viewing_ppl']:,}人" if p.get("viewing_ppl",0)>0 else "—"}</td>
+      <td style="text-align:right;padding:7px 8px;font-size:11px;color:#d0ccc8;">{f"{p['viewing_dev']:,}台" if p.get("viewing_dev",0)>0 else "—"}</td>
+      <td style="padding:7px 8px;font-size:10px;color:{"#f5a623" if p.get("match_type")=="候補一致" else "#4ade80" if p.get("match_type")=="完全一致" else "#7a7a8c"};">{p.get("comment","")}</td>
+    </tr>''' for p in items[:30])
     return f'''
     <div style="background:#1c1c22;border-radius:6px;padding:20px 24px;margin-bottom:24px;border:1px solid #2a2a35;">
       <div style="font-size:10px;letter-spacing:4px;color:#f5a623;border-bottom:1px solid #2a2a35;padding-bottom:8px;margin-bottom:16px;">番宣効果モニタリング</div>
@@ -112,6 +114,8 @@ def _build_promo_section(items: list) -> str:
           <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">SPOT回数</th>
           <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">素材</th>
           <th style="text-align:right;padding:7px 8px;color:#d0ccc8;font-size:11px;">今週視聴人数</th>
+          <th style="text-align:right;padding:7px 8px;color:#d0ccc8;font-size:11px;">視聴機器数</th>
+          <th style="text-align:left;padding:7px 8px;color:#d0ccc8;font-size:11px;">判定</th>
         </tr></thead>
         <tbody>{rows}</tbody>
       </table>
@@ -275,54 +279,78 @@ if report_type == '① 週次レポート':
 # ════════════════════════════════════════
 elif report_type == '② 番宣効果検証':
     st.markdown("#### 📋 番宣効果検証レポート")
-    st.markdown('<div class="status-box">今週のCSV + 月間_宣伝強化番組_管理リスト.xlsx から番宣効果を検証したPDFを生成します。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="status-box">Google DriveからCSVと番宣Excelを自動取得して、番宣対象番組の今週視聴データを照合します。</div>', unsafe_allow_html=True)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**今週のCSV（9ファイル）**")
-        promo_csv_files = st.file_uploader('', type=['csv'], accept_multiple_files=True, key='promo_csv')
-    with col2:
-        st.markdown("**番宣Excelファイル**")
-        excel_file = st.file_uploader('月間_宣伝強化番組_管理リスト.xlsx', type=['xlsx'], key='promo_excel')
+    use_drive_excel = st.checkbox('番宣ExcelもDriveから自動取得する（推奨）', value=True, key='promo_excel_drive')
+    excel_upload = None
+    if not use_drive_excel:
+        excel_upload = st.file_uploader('月間_宣伝強化番組_管理リスト.xlsx', type=['xlsx'], key='promo_excel')
 
     if st.button('📋 番宣効果検証レポートを生成', key='gen_promo'):
-        with st.spinner('検証レポート生成中...'):
+        with st.spinner('番宣効果検証中...'):
             try:
-                import pandas as pd
                 import tempfile, os
-
-                if not promo_csv_files or not excel_file:
-                    st.error('CSVファイルと番宣Excelの両方をアップロードしてください')
-                    st.stop()
-
-                tmpdir = tempfile.mkdtemp()
-                from core.generate_report import load_e2a, load_e1a, load_ranking, analyze_e1a, analyze_ranking, analyze_jimoto, detect_week_info, calculate_total_ppl, find_specific_programs, find_ytube_programs, generate_html
+                from core.generate_report import (
+                    load_e2a, load_e1a, load_ranking, analyze_e1a, analyze_ranking,
+                    analyze_jimoto, detect_week_info, calculate_total_ppl,
+                    find_specific_programs, find_ytube_programs, generate_html,
+                )
+                from core.drive_helper import get_latest_csv_files, get_excel_file, _extract_date
                 from core.charts import generate_all_charts as _gen_charts
                 from core.embed_charts import embed_charts_into_html
                 from core.make_pdf import generate_pdf_from_html_string
+                from core.promo_report import build_promo_items
+                from datetime import timedelta
 
-                e1a_paths = []
-                e2a_path = rank_path = None
-                for uf in promo_csv_files:
-                    p = os.path.join(tmpdir, uf.name)
-                    with open(p, 'wb') as f: f.write(uf.getvalue())
-                    if 'E1A' in uf.name: e1a_paths.append(p)
-                    elif 'E2A' in uf.name: e2a_path = p
-                    elif 'ランキング' in uf.name or 'ranking' in uf.name.lower(): rank_path = p
+                tmpdir = tempfile.mkdtemp()
 
-                excel_path = os.path.join(tmpdir, 'promo.xlsx')
-                with open(excel_path, 'wb') as f: f.write(excel_file.getvalue())
+                # ── CSV取得（Drive） ──
+                st.info('Google DriveからCSVを取得中...')
+                csv_files = get_latest_csv_files(DRIVE_FOLDER_ID)
+                if not csv_files['e1a'] or not csv_files['e2a'] or not csv_files['rank']:
+                    st.error('DriveにCSVが見つかりません。スタッフにアップロードを依頼してください。')
+                    st.stop()
+                e1a_paths = [f['path'] for f in csv_files['e1a']]
+                e2a_path  = csv_files['e2a'][0]['path']
+                rank_path = csv_files['rank'][0]['path']
+                file_names = [f['name'] for f in csv_files['e1a']] + [csv_files['e2a'][0]['name'], csv_files['rank'][0]['name']]
+                st.markdown(f'<div class="status-box">CSV取得完了: {", ".join(file_names)}</div>', unsafe_allow_html=True)
 
-                df_e2a   = load_e2a(e2a_path)
-                df_e1a   = load_e1a(e1a_paths)
-                rank     = load_ranking(rank_path)
-                e1a_data = analyze_e1a(df_e1a)
-                rank_data= analyze_ranking(rank)
-                jimoto   = analyze_jimoto(df_e2a)
+                # week_end / week_start をE2Aファイル名から取得
+                we = _extract_date(csv_files['e2a'][0]['name'])
+                ws = (we - timedelta(days=6)) if we else None
+
+                # ── Excel取得 ──
+                excel_path = None
+                if use_drive_excel:
+                    st.info('Driveから番宣Excelを取得中...')
+                    try:
+                        excel_path = get_excel_file(DRIVE_FOLDER_ID)
+                    except Exception:
+                        excel_path = None
+                    if not excel_path:
+                        st.warning('⚠️ DriveにExcelが見つかりませんでした。手動アップロードに切り替えてください。')
+                        st.stop()
+                elif excel_upload:
+                    p = os.path.join(tmpdir, 'promo.xlsx')
+                    with open(p, 'wb') as f: f.write(excel_upload.getvalue())
+                    excel_path = p
+                else:
+                    st.error('番宣Excelをアップロードしてください。')
+                    st.stop()
+
+                # ── データ分析 ──
+                st.info('データ分析中...')
+                df_e2a    = load_e2a(e2a_path)
+                df_e1a    = load_e1a(e1a_paths)
+                rank      = load_ranking(rank_path)
+                e1a_data  = analyze_e1a(df_e1a)
+                rank_data = analyze_ranking(rank)
+                jimoto    = analyze_jimoto(df_e2a)
                 week_num, week_range = detect_week_info(df_e2a)
                 total_ppl, total_count = calculate_total_ppl(df_e2a)
-                specific = find_specific_programs(df_e2a)
-                ytube    = find_ytube_programs(df_e2a)
+                specific  = find_specific_programs(df_e2a)
+                ytube     = find_ytube_programs(df_e2a)
 
                 data = dict(
                     week_num=week_num, week_range=week_range,
@@ -334,44 +362,57 @@ elif report_type == '② 番宣効果検証':
                     best_day=max(e1a_data['day_avgs'], key=e1a_data['day_avgs'].get) if e1a_data['day_avgs'] else '日',
                     yoshi_avg=e1a_data['yoshi_avg'], jcom_avg=e1a_data['jcom_avg'], jcom_zones=e1a_data['jcom_zones'],
                     top10_yoshi=rank_data['top10_yoshi'], top10_all=rank_data['top10_all'],
-                    demos=rank_data['demos'], yoshi_demos=rank_data.get('yoshi_demos',{}), jcom_demos=rank_data.get('jcom_demos',{}),
+                    demos=rank_data['demos'], yoshi_demos=rank_data.get('yoshi_demos', {}), jcom_demos=rank_data.get('jcom_demos', {}),
                     jimoto=jimoto,
                     total_all_ppl=total_ppl, total_program_count=total_count,
                     specific_programs=specific,
                     ytube_data=ytube,
                 )
 
-                # 番宣効果データ読み込み
-                xl = pd.read_excel(excel_path, sheet_name='サマリー', dtype=str).dropna(subset=['番組名'])
-                promo_items = []
-                from core.generate_report import get_date_cols, get_metric_e2a
-                name_col = df_e2a.attrs.get('name_col', 'title')
-                mc = 'Unnamed: 12' if 'Unnamed: 12' in df_e2a.columns else 'Unnamed: 13'
-                for _, row in xl.iterrows():
-                    program = str(row.get('番組名','')).strip()
-                    period  = str(row.get('重点強化期間','')).strip()
-                    spots   = str(row.get('放送回数','')).strip()
-                    material= str(row.get('制作素材','')).strip()
-                    if not program or program == 'nan': continue
-                    # 視聴データ照合
-                    viewing = 0
-                    try:
-                        rows = df_e2a[(df_e2a[mc].str.strip() == 'value_1_31') &
-                                      df_e2a[name_col].str.contains(program[:8], na=False)].copy()
-                        for col in get_date_cols(df_e2a):
-                            rows[col] = pd.to_numeric(rows[col], errors='coerce')
-                            vals = rows[col].dropna(); vals = vals[vals > 0]
-                            viewing += int(float(vals.sum()) * 1000)
-                    except: pass
-                    promo_items.append({'program':program,'period':period,'spots':spots,'material':material,'viewing':viewing})
+                # ── 番宣効果照合 ──
+                st.info('番宣Excelと照合中...')
+                try:
+                    promo_items = build_promo_items(df_e2a, excel_path, week_start=ws, week_end=we)
+                except ValueError as ve:
+                    st.error(str(ve))
+                    st.stop()
 
-                # 番宣セクションをHTMLに追加
-                promo_html = _build_promo_section(promo_items)
-                chart_imgs = _gen_charts(data, [])
+                # ── 画面に結果表示 ──
+                if promo_items:
+                    import pandas as pd
+                    exact    = [i for i in promo_items if i['match_type'] == '完全一致']
+                    partial  = [i for i in promo_items if i['match_type'] == '候補一致']
+                    no_match = [i for i in promo_items if i['match_type'] == '不一致']
+                    st.markdown(
+                        f"**今週の番宣対象番組: {len(promo_items)}件** "
+                        f"（完全一致: {len(exact)} / 候補一致: {len(partial)} / 不一致: {len(no_match)}）"
+                    )
+                    rows_disp = [{
+                        '番組名':         i['program'],
+                        '番宣期間':       i['period'],
+                        'SPOT回数':       i['spots'],
+                        '制作素材':       i['material'],
+                        '今週視聴人数':   f"{i['viewing_ppl']:,}人" if i['viewing_ppl'] else '—',
+                        '今週視聴機器数': f"{i['viewing_dev']:,}台" if i['viewing_dev'] else '—',
+                        '照合':           i['match_type'],
+                        '判定':           i['comment'],
+                    } for i in promo_items]
+                    st.dataframe(pd.DataFrame(rows_disp), use_container_width=True)
+                    if partial:
+                        st.warning(f"⚠️ 候補一致が {len(partial)} 件あります。番組名の表記ゆれを確認してください。")
+                    if no_match:
+                        st.info(f"ℹ️ {len(no_match)} 件はCSVに番組が見つかりませんでした（今週未放送の可能性）。")
+                else:
+                    st.info('今週の番宣期間に該当する番組がありませんでした。')
+                    promo_items = []
+
+                # ── PDF生成 ──
+                st.info('PDF生成中...')
+                chart_imgs    = _gen_charts(data, [])
                 template_path = str(ROOT / 'template.html')
                 html = generate_html(data, template_path, None)
                 html = embed_charts_into_html(html, chart_imgs)
-                # フッター直前に番宣セクションを挿入
+                promo_html = _build_promo_section(promo_items)
                 html = html.replace('<div class="footer">', promo_html + '<div class="footer">')
 
                 pdf_bytes = generate_pdf_from_html_string(html)
