@@ -7,7 +7,9 @@ Google Drive サービスアカウント接続ヘルパー
 import io
 import json
 import os
+import re
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 try:
@@ -113,31 +115,79 @@ def upload_file(folder_id: str, filename: str, data: bytes, mime_type: str = 'ap
     return result.get('id')
 
 
+def _extract_date(filename: str):
+    """ファイル名から YYYYMMDD を抽出して datetime を返す。見つからなければ None"""
+    m = re.search(r'(\d{8})', filename)
+    if m:
+        try:
+            return datetime.strptime(m.group(1), '%Y%m%d')
+        except ValueError:
+            return None
+    return None
+
+
 def get_latest_csv_files(folder_id: str) -> dict:
     """
-    ratingsフォルダから最新のCSVファイルを取得
-    Returns: {'e1a': [path1, ...], 'e2a': [path], 'rank': [path]}
+    ratingsフォルダからファイル名のYYYYMMDDを元に最新週のCSVを取得。
+    基準：E2A_HM の最新日付を week_end、week_end-6日を week_start とし、
+    その範囲のE1A 7本・E2A 1本・ランキング 1本を返す。
+    Returns: {'e1a': [{'path':..., 'name':...}, ...], 'e2a': [...], 'rank': [...]}
     """
     files = list_files_in_folder(folder_id, name_contains='.csv')
 
-    # archiveフォルダのファイルは除外（直下のみ）
-    e1a_files  = sorted([f for f in files if 'E1A_HM' in f['name']], key=lambda x: x['name'])
-    e2a_files  = sorted([f for f in files if 'E2A_HM' in f['name']], key=lambda x: x['name'])
-    rank_files = sorted([f for f in files if 'ランキング' in f['name'] or 'ranking' in f['name'].lower()], key=lambda x: x['name'])
+    e1a_all   = [f for f in files if 'E1A_HM' in f['name']]
+    e2a_all   = [f for f in files if 'E2A_HM' in f['name']]
+    rank_all  = [f for f in files if 'ランキング' in f['name'] or 'ranking' in f['name'].lower()]
+
+    # ── 最新E2A日付を week_end とする ──
+    e2a_dated = [(f, _extract_date(f['name'])) for f in e2a_all]
+    e2a_dated = [(f, d) for f, d in e2a_dated if d is not None]
+    if not e2a_dated:
+        raise ValueError("E2A_HM CSVがDriveフォルダに見つかりません。")
+    e2a_dated.sort(key=lambda x: x[1], reverse=True)
+    week_end   = e2a_dated[0][1]
+    week_start = week_end - timedelta(days=6)
+
+    # ── E1A: week_start〜week_end の7日分 ──
+    e1a_in_range = [
+        f for f in e1a_all
+        if _extract_date(f['name']) is not None
+        and week_start <= _extract_date(f['name']) <= week_end
+    ]
+    if len(e1a_in_range) != 7:
+        needed     = [(week_start + timedelta(days=i)).strftime('%Y%m%d') for i in range(7)]
+        found_names = [f['name'] for f in e1a_in_range]
+        raise ValueError(
+            f"E1Aファイルが7本揃っていません（{len(e1a_in_range)}本）。\n"
+            f"必要な日付: {', '.join(needed)}\n"
+            f"見つかったファイル: {', '.join(found_names) if found_names else 'なし'}"
+        )
+    e1a_in_range.sort(key=lambda f: _extract_date(f['name']))
+
+    # ── E2A: week_end と同日付の1本 ──
+    e2a_match = [f for f, d in e2a_dated if d == week_end]
+    if not e2a_match:
+        raise ValueError(f"E2A_HM の {week_end.strftime('%Y%m%d')} が見つかりません。")
+
+    # ── ランキング: week_end と同日付の1本 ──
+    rank_match = [
+        f for f in rank_all
+        if _extract_date(f['name']) == week_end
+    ]
+    if not rank_match:
+        raise ValueError(f"ランキングCSVの {week_end.strftime('%Y%m%d')} が見つかりません。")
 
     result = {'e1a': [], 'e2a': [], 'rank': []}
 
-    for f in e1a_files:
+    for f in e1a_in_range:
         tmp_path = download_to_tempfile(f['id'], suffix='.csv')
         result['e1a'].append({'path': tmp_path, 'name': f['name']})
 
-    for f in e2a_files[:1]:  # E2Aは1本
-        tmp_path = download_to_tempfile(f['id'], suffix='.csv')
-        result['e2a'].append({'path': tmp_path, 'name': f['name']})
+    tmp_path = download_to_tempfile(e2a_match[0]['id'], suffix='.csv')
+    result['e2a'].append({'path': tmp_path, 'name': e2a_match[0]['name']})
 
-    for f in rank_files[:1]:  # ランキングは1本
-        tmp_path = download_to_tempfile(f['id'], suffix='.csv')
-        result['rank'].append({'path': tmp_path, 'name': f['name']})
+    tmp_path = download_to_tempfile(rank_match[0]['id'], suffix='.csv')
+    result['rank'].append({'path': tmp_path, 'name': rank_match[0]['name']})
 
     return result
 
