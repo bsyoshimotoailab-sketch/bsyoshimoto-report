@@ -84,7 +84,7 @@ st.markdown("### 作成するレポートを選択してください")
 
 report_type = st.radio(
     '',
-    options=['① 週次レポート', '② 番宣効果検証', '③ クール総括マクロ'],
+    options=['① 週次レポート', '② 番宣効果検証', '③ クール総括マクロ', '④ 過去レポート取り込み'],
     horizontal=True,
     label_visibility='collapsed',
 )
@@ -358,8 +358,8 @@ if report_type == '① 週次レポート':
                     from core.program_history import build_program_weekly
                     prog_records = build_program_weekly(df_e2a, _year, week_num, _ws, _we)
                     ph = save_program_weekly(DRIVE_FOLDER_ID, _year, week_num, prog_records)
-                    st.markdown(f'<div class="status-box">✅ {ph["json_file"]} を保存しました（{ph["records"]}番組）</div>', unsafe_allow_html=True)
-                    st.markdown('<div class="status-box">✅ program_history_all.csv を更新しました</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="status-box">✅ Drive保存：{ph["json_file"]} を{ph["json_action"]}しました（{ph["records"]}番組）</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="status-box">✅ Drive保存：program_history_all.csv を{ph["csv_action"]}しました</div>', unsafe_allow_html=True)
                 except Exception as _e:
                     st.warning(f'番組履歴保存エラー: {_e}')
 
@@ -367,8 +367,8 @@ if report_type == '① 週次レポート':
                 try:
                     from core.history_store import save_report_pdf as _save_pdf
                     _pdf_name = f'bs_report_{_year}_W{week_num:02d}.pdf'
-                    _save_pdf(DRIVE_FOLDER_ID, 'weekly', _pdf_name, pdf_bytes)
-                    st.markdown(f'<div class="status-box">✅ {_pdf_name} をDriveに保存しました</div>', unsafe_allow_html=True)
+                    _pr = _save_pdf(DRIVE_FOLDER_ID, 'weekly', _pdf_name, pdf_bytes)
+                    st.markdown(f'<div class="status-box">✅ Drive保存：{_pdf_name} を{_pr["action_label"]}しました</div>', unsafe_allow_html=True)
                 except Exception as _e:
                     st.warning(f'PDF Drive保存エラー: {_e}')
 
@@ -609,8 +609,8 @@ elif report_type == '② 番宣効果検証':
                 try:
                     from core.history_store import save_report_pdf as _save_pdf2
                     _promo_pdf_name = f'promo_report_{_year_p}_W{week_num:02d}.pdf'
-                    _save_pdf2(DRIVE_FOLDER_ID, 'promo', _promo_pdf_name, pdf_bytes)
-                    st.markdown(f'<div class="status-box">✅ {_promo_pdf_name} をDriveに保存しました</div>', unsafe_allow_html=True)
+                    _pr2 = _save_pdf2(DRIVE_FOLDER_ID, 'promo', _promo_pdf_name, pdf_bytes)
+                    st.markdown(f'<div class="status-box">✅ Drive保存：{_promo_pdf_name} を{_pr2["action_label"]}しました</div>', unsafe_allow_html=True)
                 except Exception as _e:
                     st.warning(f'番宣PDF保存エラー: {_e}')
 
@@ -639,8 +639,8 @@ elif report_type == '② 番宣効果検証':
                         'match_type':              item.get('match_type'),
                     } for item in _all_promo]
                     ph = _save_promo_hist(DRIVE_FOLDER_ID, _year_p, week_num, _promo_records)
-                    st.markdown(f'<div class="status-box">✅ {ph["json_file"]} を保存しました</div>', unsafe_allow_html=True)
-                    st.markdown('<div class="status-box">✅ promo_history_all.csv を更新しました</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="status-box">✅ Drive保存：{ph["json_file"]} を{ph["json_action"]}しました</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="status-box">✅ Drive保存：promo_history_all.csv を{ph["csv_action"]}しました</div>', unsafe_allow_html=True)
                 except Exception as _e:
                     st.warning(f'番宣履歴保存エラー: {_e}')
 
@@ -739,6 +739,15 @@ elif report_type == '③ クール総括マクロ':
                 html = generate_macro_html(quarter_summaries, quarter, year_val, promo_data)
                 pdf_bytes = generate_pdf_from_html_string(html)
 
+                # クール総括PDFをDriveに保存
+                try:
+                    from core.history_store import save_report_pdf as _save_macro_pdf
+                    _macro_name = f'macro_report_{year_val}_q{quarter}.pdf'
+                    _mr = _save_macro_pdf(DRIVE_FOLDER_ID, 'macro', _macro_name, pdf_bytes)
+                    st.markdown(f'<div class="status-box">✅ Drive保存：{_macro_name} を{_mr["action_label"]}しました</div>', unsafe_allow_html=True)
+                except Exception as _e:
+                    st.warning(f'PDF Drive保存エラー: {_e}')
+
                 st.success(f'✅ {year_val}年 第{quarter}クール マクロレポート生成完了！')
                 st.download_button(
                     label=f'📥 macro_report_{year_val}_q{quarter}.pdf をダウンロード',
@@ -750,6 +759,51 @@ elif report_type == '③ クール総括マクロ':
             except Exception as e:
                 st.markdown(f'<div class="error-box">❌ エラー: {e}</div>', unsafe_allow_html=True)
                 import traceback; st.code(traceback.format_exc())
+
+
+# ════════════════════════════════════════
+# ④ 過去レポート取り込み
+# ════════════════════════════════════════
+elif report_type == '④ 過去レポート取り込み':
+    st.markdown("#### 📁 過去レポートPDFのDrive登録")
+    st.markdown(
+        '<div class="status-box">過去に生成したレポートPDFをDriveの「99_過去レポート取り込み」フォルダへ一括登録します。'
+        '同名ファイルは上書きされます。</div>',
+        unsafe_allow_html=True,
+    )
+
+    archive_files = st.file_uploader(
+        'PDFを選択（複数選択可）',
+        type=['pdf'],
+        accept_multiple_files=True,
+        key='archive_pdfs',
+    )
+
+    if archive_files:
+        st.markdown(f'**{len(archive_files)} 件選択済み**')
+        for f in archive_files:
+            st.markdown(f'- {f.name}')
+
+    if st.button('📤 Driveに登録する', key='upload_archive'):
+        if not archive_files:
+            st.warning('PDFを選択してください。')
+        else:
+            with st.spinner('Driveに保存中...'):
+                try:
+                    from core.history_store import save_archive_pdfs
+                    payloads = [{'name': f.name, 'data': f.getvalue()} for f in archive_files]
+                    results  = save_archive_pdfs(DRIVE_FOLDER_ID, payloads)
+                    for r in results:
+                        icon = '✅' if 'エラー' not in r['action_label'] else '❌'
+                        st.markdown(
+                            f'<div class="status-box">{icon} Drive保存：{r["filename"]} を{r["action_label"]}しました</div>',
+                            unsafe_allow_html=True,
+                        )
+                    st.success(f'✅ {len(results)} 件の処理が完了しました。')
+                except Exception as e:
+                    st.markdown(f'<div class="error-box">❌ エラー: {e}</div>', unsafe_allow_html=True)
+                    import traceback; st.code(traceback.format_exc())
+
 
 # ── フッター ──
 st.divider()

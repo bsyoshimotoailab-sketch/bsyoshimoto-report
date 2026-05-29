@@ -86,12 +86,15 @@ def download_to_tempfile(file_id: str, suffix: str = '.csv') -> str:
     return tmp.name
 
 
-def upload_file(folder_id: str, filename: str, data: bytes, mime_type: str = 'application/octet-stream') -> str:
-    """ファイルをフォルダにアップロードしてfile_idを返す"""
+def upload_file(folder_id: str, filename: str, data: bytes,
+                mime_type: str = 'application/octet-stream') -> dict:
+    """
+    ファイルをフォルダにアップロード。同名ファイルがあれば上書き。
+    Returns: {'id': str, 'action': 'created' | 'updated'}
+    """
     from googleapiclient.http import MediaIoBaseUpload
     service = get_drive_service()
 
-    # 既存ファイルを検索
     existing = list_files_in_folder(folder_id, name_contains=filename)
     existing = [f for f in existing if f['name'] == filename]
 
@@ -99,20 +102,18 @@ def upload_file(folder_id: str, filename: str, data: bytes, mime_type: str = 'ap
     media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime_type)
 
     if existing:
-        # 上書き更新
         result = service.files().update(
             fileId=existing[0]['id'],
             media_body=media,
         ).execute()
+        return {'id': result.get('id', existing[0]['id']), 'action': 'updated'}
     else:
-        # 新規作成
         result = service.files().create(
             body=file_metadata,
             media_body=media,
             fields='id',
         ).execute()
-
-    return result.get('id')
+        return {'id': result.get('id'), 'action': 'created'}
 
 
 def _extract_date(filename: str):
