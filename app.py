@@ -343,12 +343,26 @@ elif report_type == '② 番宣効果検証':
                 if use_drive_excel:
                     st.info('Driveから番宣Excelを取得中...')
                     try:
-                        excel_path = get_excel_file(DRIVE_FOLDER_ID)
-                    except Exception:
-                        excel_path = None
-                    if not excel_path:
-                        st.warning('⚠️ DriveにExcelが見つかりませんでした。手動アップロードに切り替えてください。')
-                        st.stop()
+                        excel_info = get_excel_file(DRIVE_FOLDER_ID)
+                    except Exception as ex:
+                        excel_info = None
+                        st.warning(f'⚠️ Drive Excel取得エラー: {ex}')
+                    if excel_info:
+                        excel_path = excel_info['path']
+                        st.success(f'使用Excel：{excel_info["name"]}')
+                    else:
+                        st.warning('⚠️ DriveにExcelが見つかりませんでした。以下から手動アップロードしてください。')
+                        manual_upload = st.file_uploader(
+                            '月間_宣伝強化番組_管理リスト.xlsx（手動）',
+                            type=['xlsx'],
+                            key='promo_excel_fallback',
+                        )
+                        if manual_upload:
+                            p = os.path.join(tmpdir, 'promo_manual.xlsx')
+                            with open(p, 'wb') as f: f.write(manual_upload.getvalue())
+                            excel_path = p
+                        else:
+                            st.stop()
                 elif excel_upload:
                     p = os.path.join(tmpdir, 'promo.xlsx')
                     with open(p, 'wb') as f: f.write(excel_upload.getvalue())

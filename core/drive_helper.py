@@ -216,17 +216,57 @@ def get_latest_csv_files(folder_id: str) -> dict:
     return result
 
 
-def get_excel_file(folder_id: str, filename: str = '月間_宣伝強化番組_管理リスト.xlsx') -> str:
-    """番宣Excelファイルをダウンロードして一時パスを返す"""
+def get_excel_file(folder_id: str) -> dict:
+    """
+    番宣Excelファイルをキーワード検索でDriveから取得。
+    ファイル名に '宣伝'/'番宣'/'強化番組' を含む最新更新ファイルを使用。
+    Google スプレッドシート形式にも対応。
+
+    Returns: {'path': tmp_path, 'name': filename} or None
+    """
+    from googleapiclient.http import MediaIoBaseDownload
     service = get_drive_service()
-    # フォルダ全体を再帰検索
-    query = f"name='{filename}' and trashed=false"
-    results = service.files().list(q=query, fields='files(id, name)').execute()
+
+    SHEETS_MIME = 'application/vnd.google-apps.spreadsheet'
+    KEYWORDS = ['宣伝', '番宣', '強化番組']
+
+    # フォルダ内 + キーワード検索（OR 条件）
+    kw_clauses = ' or '.join(f"name contains '{kw}'" for kw in KEYWORDS)
+    query = f"'{folder_id}' in parents and trashed=false and ({kw_clauses})"
+    results = service.files().list(
+        q=query,
+        orderBy='modifiedTime desc',
+        fields='files(id, name, mimeType, modifiedTime)',
+        pageSize=20,
+    ).execute()
     files = results.get('files', [])
-    if not files:
+
+    # xlsx / Google スプレッドシートを優先。どちらでもなければ最初のヒットを使う
+    xlsx_mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    preferred = [f for f in files if f['mimeType'] in (xlsx_mime, SHEETS_MIME)]
+    target = (preferred or files or [None])[0]
+    if target is None:
         return None
-    tmp_path = download_to_tempfile(files[0]['id'], suffix='.xlsx')
-    return tmp_path
+
+    # Google スプレッドシートは export API で xlsx に変換
+    if target['mimeType'] == SHEETS_MIME:
+        request = service.files().export_media(
+            fileId=target['id'],
+            mimeType=xlsx_mime,
+        )
+    else:
+        request = service.files().get_media(fileId=target['id'])
+
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+    tmp.write(fh.getvalue())
+    tmp.close()
+    return {'path': tmp.name, 'name': target['name']}
 
 
 def save_weekly_summary(folder_id: str, year: int, week_num: int, summary: dict):
