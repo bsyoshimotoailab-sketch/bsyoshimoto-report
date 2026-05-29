@@ -91,6 +91,32 @@ report_type = st.radio(
 
 st.divider()
 
+# ── Drive保管庫 作成・確認 ──
+with st.expander('⚙️ Driveレポート保管庫の作成・確認', expanded=False):
+    st.markdown(
+        '<div class="status-box">ratingsフォルダ直下に「BSよしもと_視聴率レポート保管庫」と'
+        'サブフォルダを作成・確認します。既存フォルダは重複作成しません。</div>',
+        unsafe_allow_html=True,
+    )
+    if st.button('📁 Driveレポート保管庫を作成・確認', key='init_archive'):
+        with st.spinner('フォルダを確認・作成中...'):
+            try:
+                from core.history_store import initialize_archive
+                _results = initialize_archive(DRIVE_FOLDER_ID)
+                for _r in _results:
+                    _label = '既存利用' if _r['action'] == 'existing' else '作成済み'
+                    st.markdown(
+                        f'<div class="status-box">📁 {_r["name"]}：{_label}</div>',
+                        unsafe_allow_html=True,
+                    )
+                st.success('✅ Driveレポート保管庫の確認が完了しました。')
+            except Exception as _e:
+                st.markdown(f'<div class="error-box">❌ エラー: {_e}</div>', unsafe_allow_html=True)
+                import traceback; st.code(traceback.format_exc())
+
+st.divider()
+
+
 def _build_promo_section(promo_result: dict) -> str:
     """番宣効果検証セクションのHTML生成（PDF埋め込み用）"""
     if not promo_result:

@@ -33,20 +33,19 @@ _folder_cache: dict = {}
 
 # ── フォルダ取得・作成 ────────────────────────────────
 
-def get_or_create_subfolder(parent_id: str, name: str) -> str:
-    """parent_id 直下に name フォルダを取得または作成してIDを返す"""
+def _get_or_create_folder_with_action(parent_id: str, name: str, service) -> tuple:
+    """parent_id 直下に name フォルダを取得または作成。Returns: (folder_id, action)"""
     cache_key = f'{parent_id}/{name}'
     if cache_key in _folder_cache:
-        return _folder_cache[cache_key]
+        return _folder_cache[cache_key], 'existing'
 
-    from core.drive_helper import get_drive_service
-    service = get_drive_service()
     q = (f"'{parent_id}' in parents and name='{name}' "
          f"and mimeType='application/vnd.google-apps.folder' and trashed=false")
     res = service.files().list(q=q, fields='files(id)').execute()
     files = res.get('files', [])
     if files:
         fid = files[0]['id']
+        action = 'existing'
     else:
         meta = {
             'name': name,
@@ -54,9 +53,38 @@ def get_or_create_subfolder(parent_id: str, name: str) -> str:
             'parents': [parent_id],
         }
         fid = service.files().create(body=meta, fields='id').execute()['id']
+        action = 'created'
 
     _folder_cache[cache_key] = fid
+    return fid, action
+
+
+def get_or_create_subfolder(parent_id: str, name: str) -> str:
+    """parent_id 直下に name フォルダを取得または作成してIDを返す"""
+    from core.drive_helper import get_drive_service
+    service = get_drive_service()
+    fid, _ = _get_or_create_folder_with_action(parent_id, name, service)
     return fid
+
+
+def initialize_archive(root_id: str) -> list:
+    """
+    DRIVE_FOLDER_ID 直下に BSよしもと_視聴率レポート保管庫 と全サブフォルダを作成・確認する。
+    Returns: [{'name': str, 'action': 'created'|'existing'}, ...]  (ルート含む計8件)
+    """
+    from core.drive_helper import get_drive_service
+    service = get_drive_service()
+
+    results = []
+
+    archive_id, action = _get_or_create_folder_with_action(root_id, ARCHIVE_ROOT, service)
+    results.append({'name': ARCHIVE_ROOT, 'action': action})
+
+    for key, folder_name in ARCHIVE_FOLDERS.items():
+        _, action = _get_or_create_folder_with_action(archive_id, folder_name, service)
+        results.append({'name': folder_name, 'action': action})
+
+    return results
 
 
 def get_archive_root(root_id: str) -> str:
