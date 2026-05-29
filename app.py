@@ -123,15 +123,15 @@ def _build_promo_section(promo_result: dict) -> str:
     def _dev(i):
         return f"{i['viewing_dev']:,}台" if i.get('viewing_dev', 0) > 0 else '—'
 
-    def _past(i):
-        p = i.get('past_avg_ppl')
-        w = i.get('past_weeks', 0)
+    def _past4(i):
+        p = i.get('past_4w_avg_ppl') or i.get('past_avg_ppl')
+        w = i.get('past_4w_weeks') or i.get('past_weeks', 0)
         if not p:
             return '—'
-        return f'{p:,}人<br><small style="color:#7a7a8c;">過去{w}週平均</small>'
+        return f'{p:,}人<br><small style="color:#7a7a8c;">{w}週平均</small>'
 
-    def _change(i):
-        cr = i.get('change_rate')
+    def _diff4(i):
+        cr = i.get('diff_4w_pct') if i.get('diff_4w_pct') is not None else i.get('change_rate')
         if cr is None:
             return '—'
         c = '#4ade80' if cr > 0 else '#f87171'
@@ -144,8 +144,8 @@ def _build_promo_section(promo_result: dict) -> str:
       <td style="padding:6px 8px;font-size:10px;color:#d0ccc8;">{i["material"]}</td>
       <td style="text-align:right;padding:6px 8px;font-size:11px;font-weight:700;color:{"#4ade80" if i.get("viewing_ppl",0)>0 else "#7a7a8c"};">{_ppl(i)}</td>
       <td style="text-align:right;padding:6px 8px;font-size:10px;color:#d0ccc8;">{_dev(i)}</td>
-      <td style="text-align:right;padding:6px 8px;font-size:10px;color:#d0ccc8;">{_past(i)}</td>
-      <td style="text-align:right;padding:6px 8px;font-size:11px;">{_change(i)}</td>
+      <td style="text-align:right;padding:6px 8px;font-size:10px;color:#d0ccc8;">{_past4(i)}</td>
+      <td style="text-align:right;padding:6px 8px;font-size:11px;">{_diff4(i)}</td>
       <td style="padding:6px 8px;font-size:10px;font-weight:700;color:{JCOLOR.get(i.get("judgment",""), "#d0ccc8")};">{i.get("judgment","—")}</td>
     </tr>''' for i in matched[:30])
 
@@ -319,13 +319,16 @@ if report_type == '① 週次レポート':
                 st.info('PDF変換中...')
                 pdf_bytes = generate_pdf_from_html_string(html)
 
-                # 週次サマリーをDriveに保存
+                # ── Drive 保存 ──────────────────────────────────
+                from core.drive_helper import save_weekly_summary, _extract_date
+                from datetime import timedelta as _td
+                _we = _extract_date(csv_files['e2a'][0]['name']) if use_drive else None
+                if isinstance(_we, datetime): _we = _we.date()
+                _ws   = (_we - _td(days=6)) if _we else None
+                _year = _we.year if _we else datetime.now().year
+
+                # 週次サマリー
                 try:
-                    from core.drive_helper import save_weekly_summary, _extract_date
-                    from datetime import timedelta as _td
-                    _we = _extract_date(csv_files['e2a'][0]['name']) if use_drive else None
-                    _ws = (_we - _td(days=6)) if _we else None
-                    _year = _we.year if _we else datetime.now().year
                     summary = {
                         'year':                _year,
                         'week_num':            week_num,
@@ -345,8 +348,29 @@ if report_type == '① 週次レポート':
                         'generated_at':        datetime.now().isoformat(),
                     }
                     save_weekly_summary(SUMMARIES_FOLDER_ID, _year, week_num, summary)
-                except Exception:
-                    pass  # 保存失敗しても続行
+                    st.markdown(f'<div class="status-box">✅ summary_{_year}_W{week_num:02d}.json を保存しました</div>', unsafe_allow_html=True)
+                except Exception as _e:
+                    st.warning(f'summary保存エラー: {_e}')
+
+                # 番組別週次実績
+                try:
+                    from core.history_store import save_program_weekly, save_report_pdf as _save_pdf
+                    from core.program_history import build_program_weekly
+                    prog_records = build_program_weekly(df_e2a, _year, week_num, _ws, _we)
+                    ph = save_program_weekly(DRIVE_FOLDER_ID, _year, week_num, prog_records)
+                    st.markdown(f'<div class="status-box">✅ {ph["json_file"]} を保存しました（{ph["records"]}番組）</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="status-box">✅ program_history_all.csv を更新しました</div>', unsafe_allow_html=True)
+                except Exception as _e:
+                    st.warning(f'番組履歴保存エラー: {_e}')
+
+                # 週次PDF を Drive に保存
+                try:
+                    from core.history_store import save_report_pdf as _save_pdf
+                    _pdf_name = f'bs_report_{_year}_W{week_num:02d}.pdf'
+                    _save_pdf(DRIVE_FOLDER_ID, 'weekly', _pdf_name, pdf_bytes)
+                    st.markdown(f'<div class="status-box">✅ {_pdf_name} をDriveに保存しました</div>', unsafe_allow_html=True)
+                except Exception as _e:
+                    st.warning(f'PDF Drive保存エラー: {_e}')
 
                 st.success(f'✅ WEEK {week_num} レポート生成完了！')
                 st.download_button(
@@ -478,12 +502,19 @@ elif report_type == '② 番宣効果検証':
                     ytube_data=ytube,
                 )
 
-                # ── 過去サマリー読み込み（過去比較用） ──
+                # ── 過去データ読み込み（過去比較用） ──
                 st.info('過去データ読み込み中...')
+                past_sums = []
+                prog_hist_df = None
                 try:
                     past_sums = load_all_summaries(SUMMARIES_FOLDER_ID)
                 except Exception:
-                    past_sums = []
+                    pass
+                try:
+                    from core.history_store import load_program_history_df
+                    prog_hist_df = load_program_history_df(DRIVE_FOLDER_ID)
+                except Exception:
+                    pass
 
                 # ── 番宣効果照合 ──
                 st.info('番宣Excelと照合中...')
@@ -492,6 +523,9 @@ elif report_type == '② 番宣効果検証':
                         df_e2a, excel_path,
                         week_start=ws, week_end=we,
                         past_summaries=past_sums,
+                        program_history_df=prog_hist_df,
+                        current_year=we.year if we else None,
+                        current_week_num=week_num,
                     )
                 except ValueError as ve:
                     st.error(str(ve))
@@ -516,17 +550,21 @@ elif report_type == '② 番宣効果検証':
                     st.markdown('**番宣効果検証（今週番宣期間対象）**')
                     rows_disp = []
                     for i in matched_items:
-                        cr = i.get('change_rate')
+                        d4  = i.get('diff_4w_pct')
+                        d13 = i.get('diff_13w_pct')
                         rows_disp.append({
-                            '番組名':    i['program'],
-                            '番宣期間':  i['period'],
-                            'SPOT':      i['spots'],
-                            '素材':      i['material'],
-                            '今週視聴人数':   f"{i['viewing_ppl']:,}人" if i['viewing_ppl'] else '—',
-                            '視聴機器数':     f"{i['viewing_dev']:,}台" if i['viewing_dev'] else '—',
-                            '比較基準':       f"{i['past_avg_ppl']:,}人(過去{i['past_weeks']}週)" if i.get('past_avg_ppl') else '—',
-                            '増減':           f"{cr:+.1f}%" if cr is not None else '—',
-                            '判定':           i.get('judgment', '—'),
+                            '番組名':       i['program'],
+                            '番宣期間':     i['period'],
+                            'SPOT':         i['spots'],
+                            '素材':         i['material'],
+                            '今週視聴人数':  f"{i['viewing_ppl']:,}人" if i.get('viewing_ppl') else '—',
+                            '視聴機器数':    f"{i['viewing_dev']:,}台" if i.get('viewing_dev') else '—',
+                            '過去4週平均':   f"{i['past_4w_avg_ppl']:,}人" if i.get('past_4w_avg_ppl') else '—',
+                            '過去13週平均':  f"{i['past_13w_avg_ppl']:,}人" if i.get('past_13w_avg_ppl') else '—',
+                            '増減率(4週比)': f"{d4:+.1f}%" if d4 is not None else '—',
+                            '増減率(13週比)': f"{d13:+.1f}%" if d13 is not None else '—',
+                            '判定':          i.get('judgment', '—'),
+                            '詳細':          i.get('judgment_detail', ''),
                         })
                     st.dataframe(pd.DataFrame(rows_disp), use_container_width=True)
                     cands = [i for i in matched_items if i['match_type'] == '候補一致']
@@ -562,6 +600,72 @@ elif report_type == '② 番宣効果検証':
                 html = html.replace('<div class="footer">', promo_html + '<div class="footer">')
 
                 pdf_bytes = generate_pdf_from_html_string(html)
+
+                # ── Drive 保存 ─────────────────────────────────
+                _year_p = we.year if we else datetime.now().year
+                _ws_p   = (we - timedelta(days=6)) if we else None
+
+                # 番宣PDFをDriveに保存
+                try:
+                    from core.history_store import save_report_pdf as _save_pdf2
+                    _promo_pdf_name = f'promo_report_{_year_p}_W{week_num:02d}.pdf'
+                    _save_pdf2(DRIVE_FOLDER_ID, 'promo', _promo_pdf_name, pdf_bytes)
+                    st.markdown(f'<div class="status-box">✅ {_promo_pdf_name} をDriveに保存しました</div>', unsafe_allow_html=True)
+                except Exception as _e:
+                    st.warning(f'番宣PDF保存エラー: {_e}')
+
+                # 番宣履歴をpromo_historyに保存
+                try:
+                    from core.history_store import save_promo_weekly as _save_promo_hist
+                    _all_promo = promo_result.get('matched', []) + promo_result.get('unmatched', [])
+                    _promo_records = [{
+                        'year':                    _year_p,
+                        'week_num':                week_num,
+                        'week_start':              _ws_p.strftime('%Y/%m/%d') if _ws_p else '',
+                        'week_end':                we.strftime('%Y/%m/%d')    if we    else '',
+                        'program':                 item['program'],
+                        'normalized_title':        item.get('normalized_title', ''),
+                        'promo_period':            item['period'],
+                        'spots':                   item['spots'],
+                        'material':                item['material'],
+                        'current_viewing_ppl':     item.get('current_viewing_ppl', item.get('viewing_ppl', 0)),
+                        'current_viewing_devices': item.get('current_viewing_devices', item.get('viewing_dev', 0)),
+                        'past_4w_avg_ppl':         item.get('past_4w_avg_ppl'),
+                        'past_13w_avg_ppl':        item.get('past_13w_avg_ppl'),
+                        'diff_4w_pct':             item.get('diff_4w_pct'),
+                        'diff_13w_pct':            item.get('diff_13w_pct'),
+                        'judgment':                item.get('judgment'),
+                        'comment':                 item.get('judgment_detail'),
+                        'match_type':              item.get('match_type'),
+                    } for item in _all_promo]
+                    ph = _save_promo_hist(DRIVE_FOLDER_ID, _year_p, week_num, _promo_records)
+                    st.markdown(f'<div class="status-box">✅ {ph["json_file"]} を保存しました</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="status-box">✅ promo_history_all.csv を更新しました</div>', unsafe_allow_html=True)
+                except Exception as _e:
+                    st.warning(f'番宣履歴保存エラー: {_e}')
+
+                # 後方互換：summaryにもpromo_itemsを保存
+                try:
+                    from core.drive_helper import save_weekly_summary as _save_sum
+                    _promo_flat = [{k: v for k, v in i.items() if k != 'match_title'}
+                                   for i in _all_promo]
+                    _save_sum(SUMMARIES_FOLDER_ID, _year_p, week_num, {
+                        'year': _year_p, 'week_num': week_num,
+                        'week_start': _ws_p.strftime('%Y/%m/%d') if _ws_p else '',
+                        'week_end':   we.strftime('%Y/%m/%d')    if we    else '',
+                        'week_range': week_range,
+                        'kpi_avg': rank_data['kpi_avg'], 'kpi_max': rank_data['kpi_max'],
+                        'kpi_max_program': rank_data['kpi_max_program'],
+                        'kpi_max_time':    rank_data['kpi_max_time'],
+                        'total_all_ppl': total_ppl, 'total_program_count': total_count,
+                        'top10_yoshi': rank_data['top10_yoshi'],
+                        'day_avgs': e1a_data['day_avgs'], 'zone_avgs': e1a_data['zone_avgs'],
+                        'promo_items': _promo_flat,
+                        'generated_at': datetime.now().isoformat(),
+                    })
+                except Exception:
+                    pass
+
                 st.success(f'✅ WEEK {week_num} 番宣効果検証レポート生成完了！')
                 st.download_button(
                     label=f'📥 bs_report_w{week_num}_promo.pdf をダウンロード',
@@ -569,40 +673,6 @@ elif report_type == '② 番宣効果検証':
                     file_name=f'bs_report_w{week_num}_promo.pdf',
                     mime='application/pdf',
                 )
-
-                # promo_items をサマリーに保存（クール総括で累積利用）
-                try:
-                    from core.drive_helper import save_weekly_summary as _save_sum
-                    _year_p = we.year if we else datetime.now().year
-                    _ws_p   = (we - timedelta(days=6)) if we else None
-                    # matched + unmatched をフラット化して保存
-                    _all_promo = (promo_result.get('matched', [])
-                                  + promo_result.get('unmatched', []))
-                    _promo_save = [
-                        {k: v for k, v in item.items() if k != 'match_title'}
-                        for item in _all_promo
-                    ]
-                    _sum_p = {
-                        'year':                _year_p,
-                        'week_num':            week_num,
-                        'week_start':          _ws_p.strftime('%Y/%m/%d') if _ws_p else '',
-                        'week_end':            we.strftime('%Y/%m/%d')    if we    else '',
-                        'week_range':          week_range,
-                        'kpi_avg':             rank_data['kpi_avg'],
-                        'kpi_max':             rank_data['kpi_max'],
-                        'kpi_max_program':     rank_data['kpi_max_program'],
-                        'kpi_max_time':        rank_data['kpi_max_time'],
-                        'total_all_ppl':       total_ppl,
-                        'total_program_count': total_count,
-                        'top10_yoshi':         rank_data['top10_yoshi'],
-                        'day_avgs':            e1a_data['day_avgs'],
-                        'zone_avgs':           e1a_data['zone_avgs'],
-                        'promo_items':         _promo_save,
-                        'generated_at':        datetime.now().isoformat(),
-                    }
-                    _save_sum(SUMMARIES_FOLDER_ID, _year_p, week_num, _sum_p)
-                except Exception:
-                    pass
 
             except Exception as e:
                 st.markdown(f'<div class="error-box">❌ エラー: {e}</div>', unsafe_allow_html=True)
