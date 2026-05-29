@@ -247,16 +247,30 @@ if report_type == '① 週次レポート':
 
                 # 週次サマリーをDriveに保存
                 try:
-                    from core.drive_helper import save_weekly_summary
+                    from core.drive_helper import save_weekly_summary, _extract_date
+                    from datetime import timedelta as _td
+                    _we = _extract_date(csv_files['e2a'][0]['name']) if use_drive else None
+                    _ws = (_we - _td(days=6)) if _we else None
+                    _year = _we.year if _we else datetime.now().year
                     summary = {
-                        'week_num': week_num, 'week_range': week_range,
-                        'kpi_avg': rank_data['kpi_avg'], 'kpi_max': rank_data['kpi_max'],
-                        'kpi_max_program': rank_data['kpi_max_program'], 'kpi_max_time': rank_data['kpi_max_time'],
-                        'top10_yoshi': rank_data['top10_yoshi'],
-                        'total_all_ppl': total_ppl,
-                        'generated_at': datetime.now().isoformat(),
+                        'year':                _year,
+                        'week_num':            week_num,
+                        'week_start':          _ws.strftime('%Y/%m/%d') if _ws else '',
+                        'week_end':            _we.strftime('%Y/%m/%d') if _we else '',
+                        'week_range':          week_range,
+                        'kpi_avg':             rank_data['kpi_avg'],
+                        'kpi_max':             rank_data['kpi_max'],
+                        'kpi_max_program':     rank_data['kpi_max_program'],
+                        'kpi_max_time':        rank_data['kpi_max_time'],
+                        'total_all_ppl':       total_ppl,
+                        'total_program_count': total_count,
+                        'top10_yoshi':         rank_data['top10_yoshi'],
+                        'day_avgs':            e1a_data['day_avgs'],
+                        'zone_avgs':           e1a_data['zone_avgs'],
+                        'promo_items':         [],
+                        'generated_at':        datetime.now().isoformat(),
                     }
-                    save_weekly_summary(SUMMARIES_FOLDER_ID, week_num, summary)
+                    save_weekly_summary(SUMMARIES_FOLDER_ID, _year, week_num, summary)
                 except Exception:
                     pass  # 保存失敗しても続行
 
@@ -424,6 +438,37 @@ elif report_type == '② 番宣効果検証':
                     mime='application/pdf',
                 )
 
+                # promo_items をサマリーに保存（クール総括で累積利用）
+                try:
+                    from core.drive_helper import save_weekly_summary as _save_sum
+                    _year_p = we.year if we else datetime.now().year
+                    _ws_p   = (we - timedelta(days=6)) if we else None
+                    _promo_save = [
+                        {k: v for k, v in item.items() if k != 'match_title'}
+                        for item in promo_items
+                    ]
+                    _sum_p = {
+                        'year':                _year_p,
+                        'week_num':            week_num,
+                        'week_start':          _ws_p.strftime('%Y/%m/%d') if _ws_p else '',
+                        'week_end':            we.strftime('%Y/%m/%d')    if we    else '',
+                        'week_range':          week_range,
+                        'kpi_avg':             rank_data['kpi_avg'],
+                        'kpi_max':             rank_data['kpi_max'],
+                        'kpi_max_program':     rank_data['kpi_max_program'],
+                        'kpi_max_time':        rank_data['kpi_max_time'],
+                        'total_all_ppl':       total_ppl,
+                        'total_program_count': total_count,
+                        'top10_yoshi':         rank_data['top10_yoshi'],
+                        'day_avgs':            e1a_data['day_avgs'],
+                        'zone_avgs':           e1a_data['zone_avgs'],
+                        'promo_items':         _promo_save,
+                        'generated_at':        datetime.now().isoformat(),
+                    }
+                    _save_sum(SUMMARIES_FOLDER_ID, _year_p, week_num, _sum_p)
+                except Exception:
+                    pass
+
             except Exception as e:
                 st.markdown(f'<div class="error-box">❌ エラー: {e}</div>', unsafe_allow_html=True)
                 import traceback; st.code(traceback.format_exc())
@@ -436,12 +481,13 @@ elif report_type == '③ クール総括マクロ':
     st.markdown("#### 📈 クール総括マクロレポート")
     st.markdown('<div class="status-box">蓄積された週次データからクール（四半期）の総括レポートを生成します。</div>', unsafe_allow_html=True)
 
-    year    = st.number_input('対象年', min_value=2024, max_value=2030, value=datetime.now().year)
-    quarter = st.selectbox('対象クール', [1, 2, 3, 4],
-                           format_func=lambda q: {1:'第1クール（1〜3月）',2:'第2クール（4〜6月）',3:'第3クール（7〜9月）',4:'第4クール（10〜12月）'}[q])
-
-    st.markdown("**番宣Excelファイル（任意）**")
-    macro_excel = st.file_uploader('月間_宣伝強化番組_管理リスト.xlsx', type=['xlsx'], key='macro_excel')
+    _q_labels = {1:'第1クール（W01〜W13）',2:'第2クール（W14〜W26）',
+                 3:'第3クール（W27〜W39）',4:'第4クール（W40〜W53）'}
+    col_y, col_q = st.columns(2)
+    with col_y:
+        macro_year = st.number_input('対象年', min_value=2024, max_value=2030, value=datetime.now().year)
+    with col_q:
+        quarter = st.selectbox('対象クール', [1, 2, 3, 4], format_func=lambda q: _q_labels[q])
 
     if st.button('📈 クール総括レポートを生成', key='gen_macro'):
         with st.spinner('マクロレポート生成中...'):
@@ -452,40 +498,47 @@ elif report_type == '③ クール総括マクロ':
 
                 all_summaries = load_all_summaries(SUMMARIES_FOLDER_ID)
 
-                # 対象クールの週を絞り込み
-                quarter_summaries = [s for s in all_summaries if get_quarter(s.get('week_num', 0)) == quarter]
+                # 対象年 + 対象クールで絞り込み
+                year_val = int(macro_year)
+                quarter_summaries = [
+                    s for s in all_summaries
+                    if s.get('year', 2026) == year_val
+                    and get_quarter(s.get('week_num', 0)) == quarter
+                ]
 
                 if not quarter_summaries:
-                    st.warning(f'第{quarter}クールのデータがまだありません。週次レポートを先に生成してください。')
+                    st.warning(
+                        f'{year_val}年 {_q_labels[quarter]} のデータがまだありません。'
+                        '週次レポートを先に生成してください。'
+                    )
                     st.stop()
 
-                st.info(f'{len(quarter_summaries)}週分のデータを集計中...')
+                # 週数表示
+                total_weeks = 13
+                found_weeks = len(quarter_summaries)
+                if found_weeks < total_weeks:
+                    st.markdown(
+                        f'<div class="status-box">現在 {found_weeks}週分で作成します'
+                        f'（{total_weeks}週そろうと完全版になります）</div>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.info(f'{found_weeks}週分のデータで作成します。')
 
-                # 番宣データ読み込み
+                # 番宣データ：summariesに蓄積された promo_items を累積利用
                 promo_data = []
-                if macro_excel:
-                    import pandas as pd, tempfile, os
-                    tmpdir = tempfile.mkdtemp()
-                    excel_path = os.path.join(tmpdir, 'promo.xlsx')
-                    with open(excel_path, 'wb') as f: f.write(macro_excel.getvalue())
-                    xl = pd.read_excel(excel_path, sheet_name='サマリー', dtype=str).dropna(subset=['番組名'])
-                    for _, row in xl.iterrows():
-                        program = str(row.get('番組名','')).strip()
-                        if not program or program == 'nan': continue
-                        promo_data.append({
-                            'program': program,
-                            'period':  str(row.get('重点強化期間','')).strip(),
-                            'spots':   str(row.get('放送回数','')).strip(),
-                        })
+                for s in quarter_summaries:
+                    for pi in s.get('promo_items', []):
+                        promo_data.append(pi)
 
-                html = generate_macro_html(quarter_summaries, quarter, int(year), promo_data)
+                html = generate_macro_html(quarter_summaries, quarter, year_val, promo_data)
                 pdf_bytes = generate_pdf_from_html_string(html)
 
-                st.success(f'✅ {year}年 第{quarter}クール マクロレポート生成完了！')
+                st.success(f'✅ {year_val}年 第{quarter}クール マクロレポート生成完了！')
                 st.download_button(
-                    label=f'📥 macro_report_{year}_q{quarter}.pdf をダウンロード',
+                    label=f'📥 macro_report_{year_val}_q{quarter}.pdf をダウンロード',
                     data=pdf_bytes,
-                    file_name=f'macro_report_{year}_q{quarter}.pdf',
+                    file_name=f'macro_report_{year_val}_q{quarter}.pdf',
                     mime='application/pdf',
                 )
 

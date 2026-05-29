@@ -205,20 +205,45 @@ def get_excel_file(folder_id: str, filename: str = '月間_宣伝強化番組_�
     return tmp_path
 
 
-def save_weekly_summary(folder_id: str, week_num: int, summary: dict):
-    """週次サマリーをDriveのsummariesフォルダに保存"""
+def save_weekly_summary(folder_id: str, year: int, week_num: int, summary: dict):
+    """週次サマリーを summary_YYYY_WXX.json としてDriveに保存"""
     data = json.dumps(summary, ensure_ascii=False, indent=2).encode('utf-8')
-    upload_file(folder_id, f'week_{week_num:02d}_summary.json', data, 'application/json')
+    filename = f'summary_{year}_W{week_num:02d}.json'
+    upload_file(folder_id, filename, data, 'application/json')
 
 
 def load_all_summaries(folder_id: str) -> list:
-    """全週次サマリーを読み込む"""
-    files = list_files_in_folder(folder_id, name_contains='_summary.json')
+    """
+    全週次サマリーを読み込む。
+    新形式 summary_YYYY_WXX.json と旧形式 week_XX_summary.json の両方に対応。
+    year・week_num 順にソートして返す。
+    """
+    all_files = list_files_in_folder(folder_id, name_contains='.json')
+
+    new_files = [f for f in all_files if re.match(r'summary_\d{4}_W\d+\.json', f['name'])]
+    old_files = [f for f in all_files if re.match(r'week_\d+_summary\.json', f['name'])]
+
     summaries = []
-    for f in sorted(files, key=lambda x: x['name']):
+
+    for f in sorted(new_files, key=lambda x: x['name']):
         try:
             data = download_file(f['id'])
             summaries.append(json.loads(data.decode('utf-8')))
         except Exception:
             continue
+
+    # 旧形式：新形式に存在しない週だけ取り込む（後方互換）
+    existing = {(s.get('year', 0), s.get('week_num', 0)) for s in summaries}
+    for f in sorted(old_files, key=lambda x: x['name']):
+        try:
+            data = download_file(f['id'])
+            s = json.loads(data.decode('utf-8'))
+            if 'year' not in s:
+                s['year'] = 2026  # 旧形式は year 未保存のため 2026 と推定
+            if (s.get('year', 0), s.get('week_num', 0)) not in existing:
+                summaries.append(s)
+        except Exception:
+            continue
+
+    summaries.sort(key=lambda s: (s.get('year', 0), s.get('week_num', 0)))
     return summaries
