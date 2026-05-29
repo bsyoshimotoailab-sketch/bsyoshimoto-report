@@ -88,37 +88,6 @@ def download_to_tempfile(file_id: str, suffix: str = '.csv') -> str:
     return tmp.name
 
 
-def upload_file(folder_id: str, filename: str, data: bytes,
-                mime_type: str = 'application/octet-stream') -> dict:
-    """
-    ファイルをフォルダにアップロード。同名ファイルがあれば上書き。共有ドライブ対応。
-    Returns: {'id': str, 'action': 'created' | 'updated'}
-    """
-    from googleapiclient.http import MediaIoBaseUpload
-    service = get_drive_service()
-
-    existing = list_files_in_folder(folder_id, name_contains=filename)
-    existing = [f for f in existing if f['name'] == filename]
-
-    file_metadata = {'name': filename, 'parents': [folder_id]}
-    media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime_type)
-
-    if existing:
-        result = service.files().update(
-            fileId=existing[0]['id'],
-            media_body=media,
-            supportsAllDrives=True,
-        ).execute()
-        return {'id': result.get('id', existing[0]['id']), 'action': 'updated'}
-    else:
-        result = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id',
-            supportsAllDrives=True,
-        ).execute()
-        return {'id': result.get('id'), 'action': 'created'}
-
 
 def _extract_date(filename: str):
     """ファイル名から YYYYMMDD を抽出して datetime.date を返す。見つからなければ None"""
@@ -275,12 +244,6 @@ def get_excel_file(folder_id: str) -> dict:
     tmp.close()
     return {'path': tmp.name, 'name': target['name']}
 
-
-def save_weekly_summary(folder_id: str, year: int, week_num: int, summary: dict):
-    """週次サマリーを summary_YYYY_WXX.json としてDriveに保存"""
-    data = json.dumps(summary, ensure_ascii=False, indent=2).encode('utf-8')
-    filename = f'summary_{year}_W{week_num:02d}.json'
-    upload_file(folder_id, filename, data, 'application/json')
 
 
 def load_all_summaries(folder_id: str) -> list:

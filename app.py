@@ -71,26 +71,6 @@ DRIVE_FOLDER_ID     = '1JIKlOBc42pUTHhHaShInWo_YT_9-GmrJ'
 SUMMARIES_FOLDER_ID = st.secrets.get('summaries_folder_id', DRIVE_FOLDER_ID) if hasattr(st, 'secrets') else DRIVE_FOLDER_ID
 
 
-def _is_quota_error(e: Exception) -> bool:
-    s = str(e)
-    return 'storageQuotaExceeded' in s or 'Service Accounts do not have storage quota' in s
-
-
-def _drive_save_warning(label: str, e: Exception):
-    """Drive保存失敗時の統一警告表示。quotaエラーは専用メッセージ。"""
-    import traceback
-    if _is_quota_error(e):
-        st.warning(
-            f'⚠️ {label}：PDF生成は完了しましたが、Drive保存に失敗しました。\n\n'
-            '**原因**：現在の保存先がマイドライブ配下のため、サービスアカウントでは書き込みできません。\n\n'
-            '**対処**：共有ドライブ配下のratingsフォルダを保存先にしてください。'
-        )
-    else:
-        st.warning(f'⚠️ {label}に失敗しました：{e}')
-        with st.expander('詳細（エラーログ）'):
-            st.code(traceback.format_exc())
-
-
 # ── Drive接続確認 ──
 @st.cache_resource
 def get_drive():
@@ -111,35 +91,6 @@ report_type = st.radio(
 )
 
 st.divider()
-
-# ── Drive保管庫 自動確認（セッション1回） ──
-if 'archive_init_status' not in st.session_state:
-    try:
-        from core.history_store import initialize_archive
-        initialize_archive(DRIVE_FOLDER_ID)
-        st.session_state['archive_init_status'] = 'ok'
-    except Exception as _init_err:
-        _init_err_str = str(_init_err)
-        if _is_quota_error(_init_err):
-            st.session_state['archive_init_status'] = 'quota_error'
-        else:
-            st.session_state['archive_init_status'] = 'error'
-        st.session_state['archive_init_err'] = _init_err_str
-
-_init_status = st.session_state.get('archive_init_status', 'ok')
-if _init_status == 'ok':
-    st.caption('Drive保存先：確認済み')
-elif _init_status == 'quota_error':
-    st.caption('Drive保存先：読み取りOK／書き込み未確認')
-    st.warning(
-        '⚠️ Drive保存先がマイドライブ配下のため、サービスアカウントでは書き込みできません。\n\n'
-        '共有ドライブ配下のratingsフォルダをDRIVE_FOLDER_IDに設定してください。'
-    )
-else:
-    st.warning(
-        '⚠️ Driveレポート保管庫の確認に失敗しました。管理者に確認してください。\n\n'
-        f'{st.session_state.get("archive_init_err", "")}'
-    )
 
 
 def _build_promo_section(promo_result: dict) -> str:
@@ -345,8 +296,9 @@ if report_type == '① 週次レポート':
                 # trend_data をロード
                 trend_json_path = os.path.join(tmpdir, 'trend_data.json')
                 try:
+                    from core.history_store import load_summaries_from_archive
                     from core.drive_helper import load_all_summaries
-                    summaries = load_all_summaries(SUMMARIES_FOLDER_ID)
+                    summaries = load_summaries_from_archive(DRIVE_FOLDER_ID) or load_all_summaries(SUMMARIES_FOLDER_ID)
                     trend_data = [{'week_num':s['week_num'],'week_range':s['week_range'],
                                    'kpi_avg':s['kpi_avg'],'kpi_max':s['kpi_max']} for s in summaries]
                     trend_data.append({'week_num':week_num,'week_range':week_range,
@@ -370,66 +322,62 @@ if report_type == '① 週次レポート':
                 st.info('PDF変換中...')
                 pdf_bytes = generate_pdf_from_html_string(html)
 
-                # ── Drive 保存 ──────────────────────────────────
-                from core.drive_helper import save_weekly_summary, _extract_date
+                # ── ダウンロード用パッケージ生成 ──
+                from core.drive_helper import _extract_date
                 from datetime import timedelta as _td
+                from core.program_history import build_program_weekly
+                from core.export_package import build_weekly_zip
+
                 _we = _extract_date(csv_files['e2a'][0]['name']) if use_drive else None
                 if isinstance(_we, datetime): _we = _we.date()
                 _ws   = (_we - _td(days=6)) if _we else None
                 _year = _we.year if _we else datetime.now().year
 
-                # 週次サマリー
-                try:
-                    summary = {
-                        'year':                _year,
-                        'week_num':            week_num,
-                        'week_start':          _ws.strftime('%Y/%m/%d') if _ws else '',
-                        'week_end':            _we.strftime('%Y/%m/%d') if _we else '',
-                        'week_range':          week_range,
-                        'kpi_avg':             rank_data['kpi_avg'],
-                        'kpi_max':             rank_data['kpi_max'],
-                        'kpi_max_program':     rank_data['kpi_max_program'],
-                        'kpi_max_time':        rank_data['kpi_max_time'],
-                        'total_all_ppl':       total_ppl,
-                        'total_program_count': total_count,
-                        'top10_yoshi':         rank_data['top10_yoshi'],
-                        'day_avgs':            e1a_data['day_avgs'],
-                        'zone_avgs':           e1a_data['zone_avgs'],
-                        'promo_items':         [],
-                        'generated_at':        datetime.now().isoformat(),
-                    }
-                    save_weekly_summary(SUMMARIES_FOLDER_ID, _year, week_num, summary)
-                    st.markdown(f'<div class="status-box">✅ summary_{_year}_W{week_num:02d}.json を保存しました</div>', unsafe_allow_html=True)
-                except Exception as _e:
-                    _drive_save_warning('サマリーJSON保存', _e)
+                summary = {
+                    'year':                _year,
+                    'week_num':            week_num,
+                    'week_start':          _ws.strftime('%Y/%m/%d') if _ws else '',
+                    'week_end':            _we.strftime('%Y/%m/%d') if _we else '',
+                    'week_range':          week_range,
+                    'kpi_avg':             rank_data['kpi_avg'],
+                    'kpi_max':             rank_data['kpi_max'],
+                    'kpi_max_program':     rank_data['kpi_max_program'],
+                    'kpi_max_time':        rank_data['kpi_max_time'],
+                    'total_all_ppl':       total_ppl,
+                    'total_program_count': total_count,
+                    'top10_yoshi':         rank_data['top10_yoshi'],
+                    'day_avgs':            e1a_data['day_avgs'],
+                    'zone_avgs':           e1a_data['zone_avgs'],
+                    'generated_at':        datetime.now().isoformat(),
+                }
 
-                # 番組別週次実績
+                prog_records = []
                 try:
-                    from core.history_store import save_program_weekly, save_report_pdf as _save_pdf
-                    from core.program_history import build_program_weekly
                     prog_records = build_program_weekly(df_e2a, _year, week_num, _ws, _we)
-                    ph = save_program_weekly(DRIVE_FOLDER_ID, _year, week_num, prog_records)
-                    st.markdown(f'<div class="status-box">✅ Drive保存：{ph["json_file"]} を{ph["json_action"]}しました（{ph["records"]}番組）</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="status-box">✅ Drive保存：program_history_all.csv を{ph["csv_action"]}しました</div>', unsafe_allow_html=True)
-                except Exception as _e:
-                    _drive_save_warning('番組履歴保存', _e)
+                except Exception:
+                    pass
 
-                # 週次PDF を Drive に保存
-                try:
-                    from core.history_store import save_report_pdf as _save_pdf
-                    _pdf_name = f'bs_report_{_year}_W{week_num:02d}.pdf'
-                    _pr = _save_pdf(DRIVE_FOLDER_ID, 'weekly', _pdf_name, pdf_bytes)
-                    st.markdown(f'<div class="status-box">✅ Drive保存：{_pdf_name} を{_pr["action_label"]}しました</div>', unsafe_allow_html=True)
-                except Exception as _e:
-                    _drive_save_warning('週次PDF Drive保存', _e)
+                zip_bytes = build_weekly_zip(pdf_bytes, _year, week_num, summary, prog_records)
 
-                st.success(f'✅ WEEK {week_num} レポート生成完了！')
-                st.download_button(
-                    label=f'📥 bs_report_w{week_num}.pdf をダウンロード',
-                    data=pdf_bytes,
-                    file_name=f'bs_report_w{week_num}.pdf',
-                    mime='application/pdf',
-                )
+                st.success(f'✅ WEEK {week_num} レポート生成完了！Drive自動保存は行いません。')
+                st.info('📁 生成後、Google DriveのBSよしもと_視聴率レポート保管庫へ手動アップロードしてください。')
+                _col1, _col2 = st.columns(2)
+                with _col1:
+                    st.download_button(
+                        label='📥 PDFをダウンロード',
+                        data=pdf_bytes,
+                        file_name=f'bs_report_{_year}_W{week_num:02d}.pdf',
+                        mime='application/pdf',
+                        key='dl_weekly_pdf',
+                    )
+                with _col2:
+                    st.download_button(
+                        label='📦 Drive登録用ZIPをダウンロード',
+                        data=zip_bytes,
+                        file_name=f'drive_upload_{_year}_W{week_num:02d}.zip',
+                        mime='application/zip',
+                        key='dl_weekly_zip',
+                    )
 
             except Exception as e:
                 st.markdown(f'<div class="error-box">❌ エラーが発生しました: {e}</div>', unsafe_allow_html=True)
@@ -558,11 +506,8 @@ elif report_type == '② 番宣効果検証':
                 past_sums = []
                 prog_hist_df = None
                 try:
-                    past_sums = load_all_summaries(SUMMARIES_FOLDER_ID)
-                except Exception:
-                    pass
-                try:
-                    from core.history_store import load_program_history_df
+                    from core.history_store import load_summaries_from_archive, load_program_history_df
+                    past_sums = load_summaries_from_archive(DRIVE_FOLDER_ID) or load_all_summaries(SUMMARIES_FOLDER_ID)
                     prog_hist_df = load_program_history_df(DRIVE_FOLDER_ID)
                 except Exception:
                     pass
@@ -652,78 +597,54 @@ elif report_type == '② 番宣効果検証':
 
                 pdf_bytes = generate_pdf_from_html_string(html)
 
-                # ── Drive 保存 ─────────────────────────────────
+                # ── ダウンロード用パッケージ生成 ──
+                from core.export_package import build_promo_zip
+
                 _year_p = we.year if we else datetime.now().year
                 _ws_p   = (we - timedelta(days=6)) if we else None
+                _all_promo = promo_result.get('matched', []) + promo_result.get('unmatched', [])
+                _promo_records = [{
+                    'year':                    _year_p,
+                    'week_num':                week_num,
+                    'week_start':              _ws_p.strftime('%Y/%m/%d') if _ws_p else '',
+                    'week_end':                we.strftime('%Y/%m/%d')    if we    else '',
+                    'program':                 item['program'],
+                    'normalized_title':        item.get('normalized_title', ''),
+                    'promo_period':            item['period'],
+                    'spots':                   item['spots'],
+                    'material':                item['material'],
+                    'current_viewing_ppl':     item.get('current_viewing_ppl', item.get('viewing_ppl', 0)),
+                    'current_viewing_devices': item.get('current_viewing_devices', item.get('viewing_dev', 0)),
+                    'past_4w_avg_ppl':         item.get('past_4w_avg_ppl'),
+                    'past_13w_avg_ppl':        item.get('past_13w_avg_ppl'),
+                    'diff_4w_pct':             item.get('diff_4w_pct'),
+                    'diff_13w_pct':            item.get('diff_13w_pct'),
+                    'judgment':                item.get('judgment'),
+                    'comment':                 item.get('judgment_detail'),
+                    'match_type':              item.get('match_type'),
+                } for item in _all_promo]
 
-                # 番宣PDFをDriveに保存
-                try:
-                    from core.history_store import save_report_pdf as _save_pdf2
-                    _promo_pdf_name = f'promo_report_{_year_p}_W{week_num:02d}.pdf'
-                    _pr2 = _save_pdf2(DRIVE_FOLDER_ID, 'promo', _promo_pdf_name, pdf_bytes)
-                    st.markdown(f'<div class="status-box">✅ Drive保存：{_promo_pdf_name} を{_pr2["action_label"]}しました</div>', unsafe_allow_html=True)
-                except Exception as _e:
-                    _drive_save_warning('番宣PDF Drive保存', _e)
+                zip_bytes_p = build_promo_zip(pdf_bytes, _year_p, week_num, _promo_records)
 
-                # 番宣履歴をpromo_historyに保存
-                try:
-                    from core.history_store import save_promo_weekly as _save_promo_hist
-                    _all_promo = promo_result.get('matched', []) + promo_result.get('unmatched', [])
-                    _promo_records = [{
-                        'year':                    _year_p,
-                        'week_num':                week_num,
-                        'week_start':              _ws_p.strftime('%Y/%m/%d') if _ws_p else '',
-                        'week_end':                we.strftime('%Y/%m/%d')    if we    else '',
-                        'program':                 item['program'],
-                        'normalized_title':        item.get('normalized_title', ''),
-                        'promo_period':            item['period'],
-                        'spots':                   item['spots'],
-                        'material':                item['material'],
-                        'current_viewing_ppl':     item.get('current_viewing_ppl', item.get('viewing_ppl', 0)),
-                        'current_viewing_devices': item.get('current_viewing_devices', item.get('viewing_dev', 0)),
-                        'past_4w_avg_ppl':         item.get('past_4w_avg_ppl'),
-                        'past_13w_avg_ppl':        item.get('past_13w_avg_ppl'),
-                        'diff_4w_pct':             item.get('diff_4w_pct'),
-                        'diff_13w_pct':            item.get('diff_13w_pct'),
-                        'judgment':                item.get('judgment'),
-                        'comment':                 item.get('judgment_detail'),
-                        'match_type':              item.get('match_type'),
-                    } for item in _all_promo]
-                    ph = _save_promo_hist(DRIVE_FOLDER_ID, _year_p, week_num, _promo_records)
-                    st.markdown(f'<div class="status-box">✅ Drive保存：{ph["json_file"]} を{ph["json_action"]}しました</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="status-box">✅ Drive保存：promo_history_all.csv を{ph["csv_action"]}しました</div>', unsafe_allow_html=True)
-                except Exception as _e:
-                    _drive_save_warning('番宣履歴保存', _e)
-
-                # 後方互換：summaryにもpromo_itemsを保存
-                try:
-                    from core.drive_helper import save_weekly_summary as _save_sum
-                    _promo_flat = [{k: v for k, v in i.items() if k != 'match_title'}
-                                   for i in _all_promo]
-                    _save_sum(SUMMARIES_FOLDER_ID, _year_p, week_num, {
-                        'year': _year_p, 'week_num': week_num,
-                        'week_start': _ws_p.strftime('%Y/%m/%d') if _ws_p else '',
-                        'week_end':   we.strftime('%Y/%m/%d')    if we    else '',
-                        'week_range': week_range,
-                        'kpi_avg': rank_data['kpi_avg'], 'kpi_max': rank_data['kpi_max'],
-                        'kpi_max_program': rank_data['kpi_max_program'],
-                        'kpi_max_time':    rank_data['kpi_max_time'],
-                        'total_all_ppl': total_ppl, 'total_program_count': total_count,
-                        'top10_yoshi': rank_data['top10_yoshi'],
-                        'day_avgs': e1a_data['day_avgs'], 'zone_avgs': e1a_data['zone_avgs'],
-                        'promo_items': _promo_flat,
-                        'generated_at': datetime.now().isoformat(),
-                    })
-                except Exception:
-                    pass
-
-                st.success(f'✅ WEEK {week_num} 番宣効果検証レポート生成完了！')
-                st.download_button(
-                    label=f'📥 bs_report_w{week_num}_promo.pdf をダウンロード',
-                    data=pdf_bytes,
-                    file_name=f'bs_report_w{week_num}_promo.pdf',
-                    mime='application/pdf',
-                )
+                st.success(f'✅ WEEK {week_num} 番宣効果検証レポート生成完了！Drive自動保存は行いません。')
+                st.info('📁 生成後、Google DriveのBSよしもと_視聴率レポート保管庫へ手動アップロードしてください。')
+                _pcol1, _pcol2 = st.columns(2)
+                with _pcol1:
+                    st.download_button(
+                        label='📥 PDFをダウンロード',
+                        data=pdf_bytes,
+                        file_name=f'promo_report_{_year_p}_W{week_num:02d}.pdf',
+                        mime='application/pdf',
+                        key='dl_promo_pdf',
+                    )
+                with _pcol2:
+                    st.download_button(
+                        label='📦 Drive登録用ZIPをダウンロード',
+                        data=zip_bytes_p,
+                        file_name=f'drive_upload_promo_{_year_p}_W{week_num:02d}.zip',
+                        mime='application/zip',
+                        key='dl_promo_zip',
+                    )
 
             except Exception as e:
                 st.markdown(f'<div class="error-box">❌ エラー: {e}</div>', unsafe_allow_html=True)
@@ -751,8 +672,10 @@ elif report_type == '③ クール総括マクロ':
                 from core.drive_helper import load_all_summaries
                 from core.macro_report import generate_macro_html, get_quarter
                 from core.make_pdf import generate_pdf_from_html_string
+                from core.history_store import load_summaries_from_archive, load_promo_history_df
 
-                all_summaries = load_all_summaries(SUMMARIES_FOLDER_ID)
+                # 保管庫の04_週次サマリーJSON/から読み込み。なければ旧フォルダへフォールバック
+                all_summaries = load_summaries_from_archive(DRIVE_FOLDER_ID) or load_all_summaries(SUMMARIES_FOLDER_ID)
 
                 # 対象年 + 対象クールで絞り込み
                 year_val = int(macro_year)
@@ -764,8 +687,8 @@ elif report_type == '③ クール総括マクロ':
 
                 if not quarter_summaries:
                     st.warning(
-                        f'{year_val}年 {_q_labels[quarter]} のデータがまだありません。'
-                        '週次レポートを先に生成してください。'
+                        f'{year_val}年 {_q_labels[quarter]} のデータがまだありません。\n'
+                        '週次レポートのZIPをDriveにアップロードしてから再実行してください。'
                     )
                     st.stop()
 
@@ -781,25 +704,26 @@ elif report_type == '③ クール総括マクロ':
                 else:
                     st.info(f'{found_weeks}週分のデータで作成します。')
 
-                # 番宣データ：summariesに蓄積された promo_items を累積利用
+                # 番宣データ：06_番宣履歴/から読み込み
                 promo_data = []
-                for s in quarter_summaries:
-                    for pi in s.get('promo_items', []):
-                        promo_data.append(pi)
+                try:
+                    promo_hist_df = load_promo_history_df(DRIVE_FOLDER_ID)
+                    if not promo_hist_df.empty and 'year' in promo_hist_df.columns and 'week_num' in promo_hist_df.columns:
+                        _qwks = [float(s['week_num']) for s in quarter_summaries]
+                        _mask = (promo_hist_df['year'].astype(float) == float(year_val)) & \
+                                (promo_hist_df['week_num'].astype(float).isin(_qwks))
+                        promo_data = promo_hist_df[_mask].to_dict('records')
+                except Exception:
+                    pass
+                if not promo_data:
+                    for s in quarter_summaries:
+                        promo_data.extend(s.get('promo_items', []))
 
                 html = generate_macro_html(quarter_summaries, quarter, year_val, promo_data)
                 pdf_bytes = generate_pdf_from_html_string(html)
 
-                # クール総括PDFをDriveに保存
-                try:
-                    from core.history_store import save_report_pdf as _save_macro_pdf
-                    _macro_name = f'macro_report_{year_val}_q{quarter}.pdf'
-                    _mr = _save_macro_pdf(DRIVE_FOLDER_ID, 'macro', _macro_name, pdf_bytes)
-                    st.markdown(f'<div class="status-box">✅ Drive保存：{_macro_name} を{_mr["action_label"]}しました</div>', unsafe_allow_html=True)
-                except Exception as _e:
-                    _drive_save_warning('クール総括PDF Drive保存', _e)
-
-                st.success(f'✅ {year_val}年 第{quarter}クール マクロレポート生成完了！')
+                st.success(f'✅ {year_val}年 第{quarter}クール マクロレポート生成完了！Drive自動保存は行いません。')
+                st.info('📁 生成後、Google DriveのBSよしもと_視聴率レポート保管庫の「03_クール総括PDF」へ手動アップロードしてください。')
                 st.download_button(
                     label=f'📥 macro_report_{year_val}_q{quarter}.pdf をダウンロード',
                     data=pdf_bytes,
@@ -813,47 +737,35 @@ elif report_type == '③ クール総括マクロ':
 
 
 # ════════════════════════════════════════
-# ④ 過去レポート取り込み
+# ④ Drive手動登録ガイド
 # ════════════════════════════════════════
 elif report_type == '④ 過去レポート取り込み':
-    st.markdown("#### 📁 過去レポートPDFのDrive登録")
+    st.markdown("#### 📁 Drive手動登録ガイド")
     st.markdown(
-        '<div class="status-box">過去に生成したレポートPDFをDriveの「99_過去レポート取り込み」フォルダへ一括登録します。'
-        '同名ファイルは上書きされます。</div>',
+        '<div class="status-box">Drive自動保存は行いません。①②③で生成したZIP・PDFを以下のフォルダへ手動アップロードしてください。</div>',
         unsafe_allow_html=True,
     )
+    st.markdown("""
+```
+BSよしもと_視聴率レポート保管庫/
+├── 01_週次レポートPDF/       ← 週次レポート PDF
+├── 02_番宣効果検証PDF/       ← 番宣効果検証 PDF
+├── 03_クール総括PDF/         ← クール総括 PDF
+├── 04_週次サマリーJSON/      ← summary_YYYY_WXX.json（ZIPに同梱）
+├── 05_番組別履歴/            ← program_weekly_YYYY_WXX.json / .csv（ZIPに同梱）
+├── 06_番宣履歴/              ← promo_YYYY_WXX.json / promo_weekly_YYYY_WXX.csv（ZIPに同梱）
+└── 99_過去レポート取り込み/  ← 過去レポートPDF（任意）
+```
+""")
+    st.markdown("""
+**手順**
 
-    archive_files = st.file_uploader(
-        'PDFを選択（複数選択可）',
-        type=['pdf'],
-        accept_multiple_files=True,
-        key='archive_pdfs',
-    )
-
-    if archive_files:
-        st.markdown(f'**{len(archive_files)} 件選択済み**')
-        for f in archive_files:
-            st.markdown(f'- {f.name}')
-
-    if st.button('📤 Driveに登録する', key='upload_archive'):
-        if not archive_files:
-            st.warning('PDFを選択してください。')
-        else:
-            with st.spinner('Driveに保存中...'):
-                try:
-                    from core.history_store import save_archive_pdfs
-                    payloads = [{'name': f.name, 'data': f.getvalue()} for f in archive_files]
-                    results  = save_archive_pdfs(DRIVE_FOLDER_ID, payloads)
-                    for r in results:
-                        icon = '✅' if 'エラー' not in r['action_label'] else '❌'
-                        st.markdown(
-                            f'<div class="status-box">{icon} Drive保存：{r["filename"]} を{r["action_label"]}しました</div>',
-                            unsafe_allow_html=True,
-                        )
-                    st.success(f'✅ {len(results)} 件の処理が完了しました。')
-                except Exception as e:
-                    st.markdown(f'<div class="error-box">❌ エラー: {e}</div>', unsafe_allow_html=True)
-                    import traceback; st.code(traceback.format_exc())
+1. ①週次レポート または ②番宣効果検証 でレポートを生成する
+2. 「📦 Drive登録用ZIPをダウンロード」でZIPを保存する
+3. ZIPを解凍し、フォルダ名に合わせて Google Drive の対応フォルダへアップロードする
+4. 次週以降、アプリはDriveに手動アップロードされた履歴JSONを読み込んで過去比較を行う
+""")
+    st.info('クール総括マクロは、④のフォルダへ04〜06のJSONがアップロードされることで自動的にデータが揃います。')
 
 
 # ── フッター ──
