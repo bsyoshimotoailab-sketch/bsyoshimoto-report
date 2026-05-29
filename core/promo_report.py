@@ -7,6 +7,26 @@ import re
 from datetime import datetime, date as _date
 
 
+def to_date_safe(v):
+    """pandas.Timestamp / datetime / date / str を datetime.date に統一。変換不能なら None"""
+    import pandas as pd
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, _date):
+        return v
+    try:
+        return pd.to_datetime(v).date()
+    except Exception:
+        return None
+
+
 def normalize_program_name(name: str) -> str:
     """番組名を正規化（スペース・記号ゆれを吸収）"""
     if not isinstance(name, str):
@@ -87,12 +107,8 @@ def build_promo_items(df_e2a, excel_path: str, week_start=None, week_end=None) -
             e2a_norm_map[key] = t
 
     # week_start/end を date 型に統一
-    ws_date = None
-    we_date = None
-    if week_start is not None:
-        ws_date = week_start if isinstance(week_start, _date) else week_start.date()
-    if week_end is not None:
-        we_date = week_end if isinstance(week_end, _date) else week_end.date()
+    ws_date = to_date_safe(week_start)
+    we_date = to_date_safe(week_end)
 
     items = []
     for _, row in xl.iterrows():
@@ -105,10 +121,17 @@ def build_promo_items(df_e2a, excel_path: str, week_start=None, week_end=None) -
             continue
 
         # 番宣期間チェック（今週と重ならなければスキップ）
+        period_comment = None
         if ws_date and we_date and period not in ('nan', '—', ''):
             p_start, p_end = _parse_promo_period(period)
-            if p_start and p_end and (we_date < p_start or ws_date > p_end):
-                continue
+            # date 型に揃える（_parse_promo_period は既に date を返すが念のため）
+            p_start = to_date_safe(p_start)
+            p_end   = to_date_safe(p_end)
+            if p_start and p_end:
+                if we_date < p_start or ws_date > p_end:
+                    continue
+            else:
+                period_comment = '番宣期間を確認してください'
 
         # 番組名照合
         norm = normalize_program_name(program)
@@ -145,7 +168,9 @@ def build_promo_items(df_e2a, excel_path: str, week_start=None, week_end=None) -
                 pass
 
         # 判定コメント
-        if viewing_ppl > 0:
+        if period_comment:
+            comment = period_comment
+        elif viewing_ppl > 0:
             tag     = '✅' if match_type == '完全一致' else '⚠️ 候補'
             comment = f'{tag} {viewing_ppl:,}人 / {viewing_dev:,}台'
         elif match_title:
