@@ -127,8 +127,10 @@ def build_promo_items(df_e2a, excel_path: str, week_start=None, week_end=None) -
             # date 型に揃える（_parse_promo_period は既に date を返すが念のため）
             p_start = to_date_safe(p_start)
             p_end   = to_date_safe(p_end)
-            if p_start and p_end:
-                if we_date < p_start or ws_date > p_end:
+            if p_start and p_end and ws_date and we_date:
+                if not (isinstance(we_date, _date) and isinstance(p_start, _date)):
+                    period_comment = '番宣期間を確認してください'
+                elif we_date < p_start or ws_date > p_end:
                     continue
             else:
                 period_comment = '番宣期間を確認してください'

@@ -116,11 +116,11 @@ def upload_file(folder_id: str, filename: str, data: bytes, mime_type: str = 'ap
 
 
 def _extract_date(filename: str):
-    """ファイル名から YYYYMMDD を抽出して datetime を返す。見つからなければ None"""
+    """ファイル名から YYYYMMDD を抽出して datetime.date を返す。見つからなければ None"""
     m = re.search(r'(\d{8})', filename)
     if m:
         try:
-            return datetime.strptime(m.group(1), '%Y%m%d')
+            return datetime.strptime(m.group(1), '%Y%m%d').date()
         except ValueError:
             return None
     return None

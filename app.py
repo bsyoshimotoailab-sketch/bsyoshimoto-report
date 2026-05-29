@@ -334,8 +334,10 @@ elif report_type == '② 番宣効果検証':
                 for w in csv_files.get('warnings', []):
                     st.warning(w)
 
-                # week_end / week_start をE2Aファイル名から取得
+                # week_end / week_start をE2Aファイル名から取得（必ず date 型）
                 we = _extract_date(csv_files['e2a'][0]['name'])
+                if isinstance(we, datetime):
+                    we = we.date()
                 ws = (we - timedelta(days=6)) if we else None
 
                 # ── Excel取得 ──
