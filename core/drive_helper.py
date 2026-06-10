@@ -98,13 +98,85 @@ def find_archive_folders(folder_id: str) -> list:
             and f['name'] in ARCHIVE_NAMES]
 
 
-def list_files_recursive(folder_id: str, max_depth: int = 2) -> list:
-    """フォルダ内の非フォルダファイルを再帰的に取得"""
+def list_files_recursive(folder_id: str, max_depth: int = 3,
+                          _folder_name: str = '', _folder_path: str = '') -> list:
+    """
+    フォルダ内のファイルを再帰的に取得する。
+    各ファイル dict に folder_name / folder_path を付加する。
+    """
     items = list_files_in_folder(folder_id)
-    result = [f for f in items if f['mimeType'] != 'application/vnd.google-apps.folder']
+    result = []
+    for f in items:
+        if f['mimeType'] != 'application/vnd.google-apps.folder':
+            fc = dict(f)
+            fc['folder_name'] = _folder_name
+            fc['folder_path'] = _folder_path
+            result.append(fc)
     if max_depth > 0:
         for sf in [f for f in items if f['mimeType'] == 'application/vnd.google-apps.folder']:
-            result.extend(list_files_recursive(sf['id'], max_depth - 1))
+            child_path = f'{_folder_path}/{sf["name"]}' if _folder_path else sf['name']
+            result.extend(list_files_recursive(
+                sf['id'], max_depth - 1,
+                _folder_name=sf['name'], _folder_path=child_path,
+            ))
+    return result
+
+
+def get_all_ratings_csvs_detailed(folder_id: str) -> list:
+    """
+    ratingsフォルダ配下を再帰的に検索して全CSVファイル一覧を返す。
+    archiveフォルダ名に依存しない。重複IDは除外。
+
+    Returns list of dicts:
+        id, name, date, csv_type ('E2A'|'E1A'|'rank'|'other'),
+        folder_name, folder_path, modifiedTime
+    """
+    # ratings root の直下ファイル
+    root_items = list_files_in_folder(folder_id)
+    all_file_dicts = []
+
+    for f in root_items:
+        if f['mimeType'] == 'application/vnd.google-apps.folder':
+            # 全サブフォルダを再帰検索（archive に限定しない）
+            sub_files = list_files_recursive(
+                f['id'], max_depth=3,
+                _folder_name=f['name'], _folder_path=f['name'],
+            )
+            all_file_dicts.extend(sub_files)
+        else:
+            fc = dict(f)
+            fc['folder_name'] = '(ratings root)'
+            fc['folder_path'] = ''
+            all_file_dicts.append(fc)
+
+    seen_ids = set()
+    result = []
+    for f in all_file_dicts:
+        if f['id'] in seen_ids:
+            continue
+        if not f['name'].lower().endswith('.csv'):
+            continue
+        seen_ids.add(f['id'])
+
+        d = _extract_date(f['name'])
+        csv_type = 'other'
+        if 'E2A_HM' in f['name']:
+            csv_type = 'E2A'
+        elif 'E1A_HM' in f['name']:
+            csv_type = 'E1A'
+        elif 'ランキング' in f['name'] or 'ranking' in f['name'].lower():
+            csv_type = 'rank'
+
+        result.append({
+            'id':           f['id'],
+            'name':         f['name'],
+            'date':         d,
+            'csv_type':     csv_type,
+            'folder_name':  f.get('folder_name', ''),
+            'folder_path':  f.get('folder_path', ''),
+            'modifiedTime': f.get('modifiedTime', ''),
+        })
+
     return result
 
 
@@ -160,16 +232,16 @@ def _extract_date(filename: str):
 def get_latest_csv_files(folder_id: str) -> dict:
     """
     ratingsフォルダからファイル名のYYYYMMDDを元に最新週のCSVを取得。
-    基準：E2A_HM の最新日付を week_end、week_end-6日を week_start とし、
-    その範囲のE1A（5本以上）・E2A 1本・ランキング 1本を返す。
+    基準：E1A_HM の最新日付が含まれるISO週（月〜日）を対象週とする。
+    E2A・ランキングは対象週の日曜または翌月曜のどちらか存在する方を使う。
 
     Returns: {
         'e1a':       [{'path':..., 'name':...}, ...],
         'e2a':       [{'path':..., 'name':...}],
         'rank':      [{'path':..., 'name':...}],
         'warnings':  ['E1Aは7本中6本で生成します。不足: 20260525'],
-        'week_start': 'YYYYMMDD',
-        'week_end':   'YYYYMMDD',
+        'week_start': 'YYYYMMDD',  # 月曜
+        'week_end':   'YYYYMMDD',  # 日曜
     }
     """
     files = list_files_in_folder(folder_id, name_contains='.csv')
@@ -178,31 +250,34 @@ def get_latest_csv_files(folder_id: str) -> dict:
     e2a_all  = [f for f in files if 'E2A_HM' in f['name']]
     rank_all = [f for f in files if 'ランキング' in f['name'] or 'ranking' in f['name'].lower()]
 
-    # ── 最新E2A日付を week_end とする ──
-    e2a_dated = [(f, _extract_date(f['name'])) for f in e2a_all]
-    e2a_dated = [(f, d) for f, d in e2a_dated if d is not None]
-    if not e2a_dated:
-        raise ValueError("E2A_HM CSVがDriveフォルダに見つかりません。")
-    e2a_dated.sort(key=lambda x: x[1], reverse=True)
-    week_end   = e2a_dated[0][1]
-    week_start = week_end - timedelta(days=6)
+    # ── 最新E1A日付が含まれるISO週(月〜日)を対象週とする ──
+    e1a_dated = [(f, _extract_date(f['name'])) for f in e1a_all]
+    e1a_dated = [(f, d) for f, d in e1a_dated if d is not None]
+    if not e1a_dated:
+        raise ValueError("E1A_HM CSVがDriveフォルダに見つかりません。")
 
-    # ── E1A: week_start〜week_end の範囲で取得（5本未満なら停止、5〜6本はwarning） ──
+    latest_e1a_date = max(d for _, d in e1a_dated)
+    # weekday(): 月=0 … 日=6 → その週の月曜を起点にする
+    week_start = latest_e1a_date - timedelta(days=latest_e1a_date.weekday())
+    week_end   = week_start + timedelta(days=6)  # 日曜
+
+    # ── E1A: week_start〜week_end（月〜日）の範囲で取得（5本未満なら停止、5〜6本はwarning） ──
     e1a_in_range = [
-        f for f in e1a_all
-        if _extract_date(f['name']) is not None
-        and week_start <= _extract_date(f['name']) <= week_end
+        f for f, d in e1a_dated
+        if week_start <= d <= week_end
     ]
     e1a_in_range.sort(key=lambda f: _extract_date(f['name']))
 
     warnings = []
     if len(e1a_in_range) < 5:
-        needed      = [(week_start + timedelta(days=i)).strftime('%Y%m%d') for i in range(7)]
-        found_names = [f['name'] for f in e1a_in_range]
+        all_dates   = {(week_start + timedelta(days=i)).strftime('%Y%m%d') for i in range(7)}
+        found_dates = sorted(_extract_date(f['name']).strftime('%Y%m%d') for f in e1a_in_range)
+        missing     = sorted(all_dates - set(found_dates))
         raise ValueError(
             f"E1Aファイルが不足しています（{len(e1a_in_range)}本）。5本以上必要です。\n"
-            f"必要な日付: {', '.join(needed)}\n"
-            f"見つかったファイル: {', '.join(found_names) if found_names else 'なし'}"
+            f"対象期間: {week_start.strftime('%Y%m%d')}〜{week_end.strftime('%Y%m%d')}\n"
+            f"見つかったE1A日付: {', '.join(found_dates) if found_dates else 'なし'}\n"
+            f"足りない日付: {', '.join(missing)}"
         )
     if len(e1a_in_range) < 7:
         all_dates   = {(week_start + timedelta(days=i)).strftime('%Y%m%d') for i in range(7)}
@@ -212,18 +287,29 @@ def get_latest_csv_files(folder_id: str) -> dict:
             f"E1Aは7本中{len(e1a_in_range)}本で生成します。不足: {', '.join(missing)}"
         )
 
-    # ── E2A: week_end と同日付の1本 ──
-    e2a_match = [f for f, d in e2a_dated if d == week_end]
+    # ── E2A: 対象週の日曜(week_end)または翌月曜(week_end+1)のどちらか存在する方 ──
+    e2a_dated = [(f, _extract_date(f['name'])) for f in e2a_all]
+    e2a_dated = [(f, d) for f, d in e2a_dated if d is not None]
+    e2a_match = [f for f, d in e2a_dated
+                 if d in (week_end, week_end + timedelta(days=1))]
     if not e2a_match:
-        raise ValueError(f"E2A_HM の {week_end.strftime('%Y%m%d')} が見つかりません。")
+        raise ValueError(
+            f"E2A_HM の {week_end.strftime('%Y%m%d')} または "
+            f"{(week_end + timedelta(days=1)).strftime('%Y%m%d')} が見つかりません。"
+        )
+    e2a_match.sort(key=lambda f: _extract_date(f['name']))
 
-    # ── ランキング: week_end と同日付の1本 ──
+    # ── ランキング: 対象週の日曜(week_end)または翌月曜(week_end+1)のどちらか存在する方 ──
     rank_match = [
         f for f in rank_all
-        if _extract_date(f['name']) == week_end
+        if _extract_date(f['name']) in (week_end, week_end + timedelta(days=1))
     ]
     if not rank_match:
-        raise ValueError(f"ランキングCSVの {week_end.strftime('%Y%m%d')} が見つかりません。")
+        raise ValueError(
+            f"ランキングCSVの {week_end.strftime('%Y%m%d')} または "
+            f"{(week_end + timedelta(days=1)).strftime('%Y%m%d')} が見つかりません。"
+        )
+    rank_match.sort(key=lambda f: _extract_date(f['name']))
 
     result = {
         'e1a':        [],
