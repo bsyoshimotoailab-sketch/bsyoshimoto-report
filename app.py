@@ -392,255 +392,253 @@ elif report_type == '② 番宣効果検証':
     st.markdown("#### 📋 番宣効果判定レポート")
     st.markdown(
         '<div class="status-box">'
-        '番宣対象番組の今週視聴データと過去履歴を照合して効果を判定します。'
-        '週次レポートとは独立した「番宣効果判定レポート」を生成します。'
+        '番宣対象番組の今週視聴データ（E1A日別×7本）と過去4週平均を照合して効果を判定します。<br>'
+        '読み込み元: <b>AI判定用_AUTO（Sheets）</b> ＋ <b>E1A_HM_番組単位（Drive・日別）</b>'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    use_drive_excel = st.checkbox('番宣ExcelもDriveから自動取得する（推奨）', value=True, key='promo_excel_drive')
-    excel_upload = None
-    if not use_drive_excel:
-        excel_upload = st.file_uploader('月間_宣伝強化番組_管理リスト.xlsx', type=['xlsx'], key='promo_excel')
-
-    # ── 番組履歴ステータス（事前確認） ──────────────────────────
-    st.markdown("---")
-    st.markdown("**📦 番組履歴データ確認**（過去4週・13週平均の比較に使用）")
-    try:
-        from core.promo_effect_report import load_program_history as _lph
-        _pre_df, _pre_dbg = _lph(DRIVE_FOLDER_ID)
-        if _pre_df.empty:
-            st.error(
-                f'⛔ 番組別履歴データが読み込めません。\n\n'
-                f'原因: {_pre_dbg.get("error", "不明")}\n\n'
-                '**PDF生成前に「④ 過去レポート取り込み（肥後用）」で履歴データを再構築してください。**\n'
-                '再構築後のZIPをDriveの `05_番組別履歴/` へアップロードすることで照合が可能になります。'
-            )
-            _pre_hist_ok = False
-        else:
-            st.success(
-                f'✅ 履歴データ読込成功: {_pre_dbg["row_count"]}行 / '
-                f'{_pre_dbg["week_count"]}週分 / {_pre_dbg["program_count"]}番組'
-            )
-            if _pre_dbg['weeks']:
-                st.caption(f'含まれる週: {", ".join(_pre_dbg["weeks"])}')
-            _pre_hist_ok = True
-    except Exception as _pre_ex:
-        st.warning(f'⚠️ 履歴データ確認中にエラー: {_pre_ex}')
-        _pre_hist_ok = False
-    st.markdown("---")
+    from core.sheets_helper import get_promo_sheet_id
+    _promo_sid = get_promo_sheet_id()
+    if not _promo_sid:
+        st.warning(
+            '⚠️ `promo_sheet_id` が未設定です。\n\n'
+            '`.streamlit/secrets.toml` に `promo_sheet_id = "スプレッドシートID"` を追加してください。'
+        )
 
     if st.button('📋 番宣効果判定レポートを生成', key='gen_promo'):
         with st.spinner('番宣効果判定レポート生成中...'):
             try:
-                import tempfile
                 import pandas as pd
                 from datetime import timedelta
-                from core.generate_report import load_e2a, detect_week_info
                 from core.drive_helper import (
-                    list_files_in_folder, _extract_date,
-                    download_to_tempfile, get_excel_file,
+                    get_all_ratings_csvs_detailed, download_file, _extract_date,
                 )
                 from core.make_pdf import generate_pdf_from_html_string
+                from core.sheets_helper import get_promo_sheet_id, load_ai_promo_tab
                 from core.promo_effect_report import (
-                    load_program_history,
-                    build_promo_effect_items,
-                    build_promo_effect_html,
+                    load_e1a_bangumi, build_e1a_norm_map,
+                    build_promo_effect_items, build_promo_effect_html,
                 )
                 from core.export_package import build_promo_zip
 
-                tmpdir = tempfile.mkdtemp()
-
-                # ── E2A CSV 取得（E1A・ランキングは不要）──────────
-                st.info('Google Drive から最新 E2A CSV を取得中...')
-                _all_csv = list_files_in_folder(DRIVE_FOLDER_ID, name_contains='.csv')
-                _e2a_candidates = [
-                    (f, _extract_date(f['name']))
-                    for f in _all_csv if 'E2A_HM' in f['name']
-                ]
-                _e2a_candidates = [(f, d) for f, d in _e2a_candidates if d is not None]
-                if not _e2a_candidates:
-                    st.error('⛔ DriveフォルダにE2A_HM CSVが見つかりません。スタッフにアップロードを依頼してください。')
+                # ── Sheets ID 確認 ────────────────────────────────
+                promo_sid = get_promo_sheet_id()
+                if not promo_sid:
+                    st.error('⛔ `promo_sheet_id` が未設定です。secrets.toml を確認してください。')
                     st.stop()
-                _e2a_candidates.sort(key=lambda x: x[1], reverse=True)
-                _e2a_file, we = _e2a_candidates[0]
-                e2a_path = download_to_tempfile(_e2a_file['id'], suffix='.csv')
+
+                # ── Drive から全 E1A_HM_番組単位 CSV を収集 ────────
+                st.info('Google Drive から E1A_HM_番組単位 CSV を収集中（サブフォルダ含む）...')
+                _all_csvs = get_all_ratings_csvs_detailed(DRIVE_FOLDER_ID)
+                _e1a_bangumi_all = [
+                    f for f in _all_csvs
+                    if 'E1A_HM' in f['name'] and '番組単位' in f['name']
+                    and f['date'] is not None
+                ]
+
+                if not _e1a_bangumi_all:
+                    st.error(
+                        '⛔ Drive に E1A_HM_番組単位*.csv が見つかりません。\n\n'
+                        'ratings フォルダ（またはサブフォルダ）に '
+                        'E1A_HM_番組単位YYYYMMDD.csv をアップロードしてください。'
+                    )
+                    st.stop()
+
+                # ── 最新 E1A の日付から対象週を決定 ─────────────────
+                _latest_e1a_date = max(f['date'] for f in _e1a_bangumi_all)
+                _wd = _latest_e1a_date.weekday()  # 月=0 … 日=6
+                we = _latest_e1a_date - timedelta(days=_wd) + timedelta(days=6)
                 ws = we - timedelta(days=6)
+                year_val = we.year
+                week_num = we.isocalendar()[1]
+                week_range = f'{ws.month}/{ws.day}〜{we.month}/{we.day}'
+
                 st.markdown(
-                    f'<div class="status-box">E2A取得: {_e2a_file["name"]} '
-                    f'（対象週: {ws.month}/{ws.day}〜{we.month}/{we.day}）</div>',
+                    f'<div class="status-box">対象週: {ws} 〜 {we}（W{week_num:02d}）</div>',
                     unsafe_allow_html=True,
                 )
 
-                # ── 番宣 Excel 取得 ────────────────────────────────
-                excel_path = None
-                if use_drive_excel:
-                    st.info('Drive から番宣 Excel を取得中...')
-                    try:
-                        excel_info = get_excel_file(DRIVE_FOLDER_ID)
-                    except Exception as _ex_err:
-                        excel_info = None
-                        st.warning(f'⚠️ Drive Excel 取得エラー: {_ex_err}')
-                    if excel_info:
-                        excel_path = excel_info['path']
-                        st.success(f'使用 Excel: {excel_info["name"]}')
-                    else:
-                        st.warning('⚠️ Drive に番宣 Excel が見つかりません。手動アップロードしてください。')
-                        _fallback = st.file_uploader(
-                            '月間_宣伝強化番組_管理リスト.xlsx（手動）',
-                            type=['xlsx'], key='promo_excel_fallback',
-                        )
-                        if _fallback:
-                            import os
-                            _p = os.path.join(tmpdir, 'promo_manual.xlsx')
-                            with open(_p, 'wb') as _fh:
-                                _fh.write(_fallback.getvalue())
-                            excel_path = _p
-                        else:
-                            st.stop()
-                elif excel_upload:
-                    import os
-                    _p = os.path.join(tmpdir, 'promo.xlsx')
-                    with open(_p, 'wb') as _fh:
-                        _fh.write(excel_upload.getvalue())
-                    excel_path = _p
-                else:
-                    st.error('番宣 Excel をアップロードしてください。')
-                    st.stop()
+                # ── 今週の E1A ファイルを特定 ─────────────────────
+                _current_week_files = [
+                    f for f in _e1a_bangumi_all
+                    if ws <= f['date'] <= we
+                ]
+                _current_dates = sorted(f['date'].strftime('%Y%m%d') for f in _current_week_files)
+                _all_week_dates = {
+                    (ws + timedelta(days=i)).strftime('%Y%m%d') for i in range(7)
+                }
+                _missing_dates = sorted(_all_week_dates - set(_current_dates))
 
-                # ── E2A 読み込み ──────────────────────────────────
-                st.info('E2A CSV を読み込み中...')
-                df_e2a = load_e2a(e2a_path)
-                week_num, week_range = detect_week_info(df_e2a)
-                year_val = we.year
-
-                # ── 番組履歴読み込み（詳細ステータス表示）────────
-                st.info('番組別履歴データを読み込み中...')
-                prog_hist_df, hist_dbg = load_program_history(DRIVE_FOLDER_ID)
-
-                st.markdown("**履歴読込ステータス:**")
-                _hcol1, _hcol2, _hcol3, _hcol4 = st.columns(4)
-                _hcol1.metric('フォルダ確認', '✅' if hist_dbg['folder_found'] else '❌')
-                _hcol2.metric('データ行数',   hist_dbg['row_count'])
-                _hcol3.metric('週数',         hist_dbg['week_count'])
-                _hcol4.metric('番組数',       hist_dbg['program_count'])
-                if hist_dbg['weeks']:
-                    st.caption(f'履歴週: {", ".join(hist_dbg["weeks"])}')
-                if hist_dbg['error']:
-                    st.markdown(
-                        f'<div class="error-box">⛔ 履歴読込エラー: {hist_dbg["error"]}</div>',
-                        unsafe_allow_html=True,
-                    )
-
-                # ── 履歴なし → PDF生成を停止 ──────────────────────
-                if prog_hist_df.empty:
-                    st.markdown(
-                        '<div class="error-box" style="font-size:15px;padding:20px;">'
-                        '⛔ <strong>履歴データ未読込のため、番宣効果判定レポートは生成できません。</strong><br><br>'
-                        '「④ 過去レポート取り込み（肥後用）」で過去 CSV から履歴を再構築し、'
-                        'ZIPを Drive の <code>05_番組別履歴/</code> へアップロードしてください。'
-                        '</div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.stop()
-
-                # ── 番宣効果照合・判定 ────────────────────────────
-                st.info('番宣 Excel と視聴データを照合・判定中...')
-                try:
-                    promo_result = build_promo_effect_items(
-                        df_e2a, excel_path, prog_hist_df,
-                        week_start=ws, week_end=we,
-                        cur_year=year_val, cur_week_num=week_num,
-                    )
-                except ValueError as _ve:
-                    st.error(str(_ve))
-                    st.stop()
-
-                sm          = promo_result['summary']
-                all_items   = promo_result['all_items']
-                effect      = promo_result['effect']
-                no_effect   = promo_result['no_effect']
-                pending     = promo_result['pending']
-                needs_check = promo_result['needs_check']
-                hist_debug  = promo_result['hist_debug']
-
-                # ── Streamlit 結果表示 ────────────────────────────
+                # ── E1A 7日分チェック ──────────────────────────────
                 st.markdown("---")
-                st.markdown("**📊 効果判定サマリー**")
-                _mc1, _mc2, _mc3, _mc4, _mc5, _mc6, _mc7 = st.columns(7)
-                _mc1.metric('番宣対象',     f"{sm['total_promo']}件")
-                _mc2.metric('CSV照合成功',  f"{sm['csv_matched']}件")
-                _mc3.metric('履歴比較成功', f"{sm['hist_compared']}件")
-                _mc4.metric('効果あり',     f"{sm['effect_found']}件")
-                _mc5.metric('効果見えず',   f"{sm['no_effect']}件")
-                _mc6.metric('判定保留',     f"{sm['pending']}件")
-                _mc7.metric('要確認',       f"{sm['needs_check']}件")
+                st.markdown("**📅 今週 E1A 確認**")
+                _c1, _c2, _c3 = st.columns(3)
+                _c1.metric('取得済み', f'{len(_current_week_files)}本')
+                _c2.metric('必要本数', '7本')
+                _c3.metric('不足', f'{len(_missing_dates)}日' if _missing_dates else '0日（OK）')
+                if _current_dates:
+                    st.caption(f'取得済み日付: {", ".join(_current_dates)}')
 
-                # 全件テーブル
-                if all_items:
-                    st.markdown("**全件 効果判定テーブル**")
-                    _rows_disp = []
-                    for _i in all_items:
-                        _d4  = _i.get('diff_4w_pct')
-                        _d13 = _i.get('diff_13w_pct')
-                        _rows_disp.append({
-                            '番組名':        _i['program'],
-                            '番宣期間':      _i['period'],
-                            'SPOT':          _i['spots'],
-                            '今週視聴人数':  f"{_i['viewing_ppl']:,}人"       if _i.get('viewing_ppl')       else '—',
-                            '過去4週平均':   f"{_i['past_4w_avg_ppl']:,}人"   if _i.get('past_4w_avg_ppl')   else '—',
-                            '4週比':         f'{_d4:+.1f}%'                   if _d4  is not None            else '—',
-                            '過去13週平均':  f"{_i['past_13w_avg_ppl']:,}人"  if _i.get('past_13w_avg_ppl')  else '—',
-                            '13週比':        f'{_d13:+.1f}%'                  if _d13 is not None            else '—',
-                            '判定':          _i['judgment'],
-                            'コメント':      (_i.get('comment') or '')[:60],
-                            '照合':          _i['match_type'],
+                if _missing_dates:
+                    st.error(
+                        f'⛔ 番宣効果検証にはE1A日別CSVが7日分必要です。\n\n'
+                        f'不足: {", ".join(_missing_dates)}\n\n'
+                        f'上記の日付の E1A_HM_番組単位YYYYMMDD.csv を '
+                        f'Drive の ratings フォルダにアップロードしてください。'
+                    )
+                    st.stop()
+
+                # ── 過去4週の E1A ファイルを特定 ─────────────────
+                past_weeks_files: dict = {}
+                past_weeks_counts: dict = {}
+                for _i in range(1, 5):
+                    _pw_end   = we - timedelta(days=7 * _i)
+                    _pw_start = ws - timedelta(days=7 * _i)
+                    _pw_label = f'{_pw_start.strftime("%m/%d")}〜{_pw_end.strftime("%m/%d")}'
+                    _pw_files = [
+                        f for f in _e1a_bangumi_all
+                        if _pw_start <= f['date'] <= _pw_end
+                    ]
+                    past_weeks_files[_pw_label] = _pw_files
+                    past_weeks_counts[_pw_label] = len(_pw_files)
+
+                st.markdown("**📅 過去4週 E1A 確認**")
+                _pcols = st.columns(4)
+                for _ci, (_lbl, _cnt) in enumerate(past_weeks_counts.items()):
+                    _pcols[_ci].metric(_lbl, f'{_cnt}本', delta=None)
+
+                total_past = sum(past_weeks_counts.values())
+                st.caption(f'過去4週 合計取得: {total_past}本（週あたり0〜7本、2週以上のデータで判定可能）')
+
+                # ── E1A ダウンロード & DataFrame 作成 ────────────
+                st.info('E1A CSVをダウンロード・読み込み中...')
+
+                def _load_dfs(file_list):
+                    dfs = []
+                    for _f in file_list:
+                        try:
+                            _raw = download_file(_f['id'])
+                            _df  = load_e1a_bangumi(_raw)
+                            dfs.append(_df)
+                        except Exception as _ex:
+                            st.warning(f'⚠️ {_f["name"]} 読込失敗: {_ex}')
+                    return dfs
+
+                current_e1a_dfs = _load_dfs(_current_week_files)
+                past_weeks_e1a: dict = {}
+                for _lbl, _files in past_weeks_files.items():
+                    if _files:
+                        past_weeks_e1a[_lbl] = _load_dfs(_files)
+
+                # ── 今週 E1A 正規化マップをデバッグ表示 ──────────
+                _cur_norm_map = build_e1a_norm_map(current_e1a_dfs)
+                st.caption(f'🔍 今週E1A番組数（正規化後）: {len(_cur_norm_map)}件')
+
+                # ── AI判定用_AUTO 読み込み ────────────────────────
+                st.info('番宣管理スプレッドシート「AI判定用_AUTO」を読み込み中...')
+                try:
+                    promo_items, _sheet_meta = load_ai_promo_tab(promo_sid)
+                    st.success(f'✅ AI判定用_AUTO: {_sheet_meta["row_count"]}行 読み込み完了')
+                except Exception as _sheet_err:
+                    st.error(f'⛔ AI判定用_AUTO 読み込みエラー: {_sheet_err}')
+                    st.stop()
+
+                # ── 照合・判定 ────────────────────────────────────
+                st.info('番宣リストと E1A を照合・判定中...')
+                promo_result = build_promo_effect_items(
+                    promo_items=promo_items,
+                    current_e1a_dfs=current_e1a_dfs,
+                    past_weeks_e1a=past_weeks_e1a,
+                    week_start=ws,
+                    week_end=we,
+                    cur_year=year_val,
+                    cur_week_num=week_num,
+                )
+
+                sm                 = promo_result['summary']
+                target_items       = promo_result.get('target_items', [])
+                out_of_range       = promo_result.get('out_of_range', [])
+                period_unparseable = promo_result.get('period_unparseable', [])
+                period_unset       = promo_result.get('period_unset', [])
+                unmatched          = promo_result.get('unmatched', [])
+
+                # ── デバッグパネル ────────────────────────────────
+                st.markdown("---")
+                st.markdown("**📋 デバッグ情報**")
+                _dc = st.columns(4)
+                _dc[0].metric('今週対象期間', f'{ws} 〜 {we}')
+                _dc[1].metric('今週E1A取得数', f'{len(current_e1a_dfs)}本')
+                _dc[2].metric('過去4週E1A取得数', f'{total_past}本')
+                _dc[3].metric('番宣リスト行数', f'{sm.get("excel_total", 0) + sm.get("non_program_excluded", 0)}行')
+
+                _dc2 = st.columns(4)
+                _dc2[0].metric('除外した行数', f'{sm.get("non_program_excluded", 0)}件')
+                _dc2[1].metric('判定対象番組数', f'{sm.get("target_total", 0)}件')
+                _dc2[2].metric('照合成功', f'{sm.get("csv_matched", 0)}件')
+                _dc2[3].metric('照合不可', f'{sm.get("unmatched", 0)}件')
+
+                if promo_result.get('debug_unmatched'):
+                    with st.expander(f'⚠️ 照合できなかった番組名（{len(promo_result["debug_unmatched"])}件）'):
+                        for _nm in promo_result['debug_unmatched']:
+                            st.write(f'  • {_nm}')
+                        st.caption('これらの番組はE1A CSVに対応する番組名が見つかりませんでした。')
+
+                # ── 判定対象テーブル ──────────────────────────────
+                st.markdown("---")
+                st.markdown(f"**🎯 判定対象（{len(target_items)}件）**")
+                if target_items:
+                    _tgt_rows = []
+                    for _i in target_items:
+                        _d4 = _i.get('diff_4w_pct')
+                        _tgt_rows.append({
+                            '番組名':       _i['program'],
+                            '正規化後':     _i.get('normalized_title', ''),
+                            '番宣期間':     _i['period'],
+                            '照合タイプ':   _i.get('match_type', ''),
+                            '照合番組名':   _i.get('match_title', '') or '（未照合）',
+                            '今週視聴人数': f"{_i['viewing_ppl']:,}人" if _i.get('viewing_ppl') else '—',
+                            '過去4週平均':  f"{_i['past_4w_avg_ppl']:,}人" if _i.get('past_4w_avg_ppl') else '—',
+                            '過去4週数':    _i.get('past_4w_weeks', 0),
+                            '4週平均比':    f'{_d4:+.1f}%' if _d4 is not None else '—',
+                            '判定':         _i['judgment'],
                         })
-                    st.dataframe(pd.DataFrame(_rows_disp), use_container_width=True)
+                    st.dataframe(pd.DataFrame(_tgt_rows), use_container_width=True)
+                else:
+                    st.info('判定対象候補がありません。番宣期間の設定を確認してください。')
 
-                # 候補一致の警告
-                _cands = [_i for _i in all_items if _i.get('match_type') == '候補一致']
-                if _cands:
-                    st.warning(f'⚠️ 候補一致が {len(_cands)} 件あります。番組名の表記ゆれを確認してください。')
+                # ── 補足情報（折りたたみ） ────────────────────────
+                if out_of_range:
+                    with st.expander(f'📋 対象外（期間終了済み）{len(out_of_range)}件'):
+                        st.dataframe(pd.DataFrame([{
+                            '番組名': _i['program'], '番宣期間': _i['period'],
+                            '終了日': _i.get('parsed_end', ''),
+                        } for _i in out_of_range]), use_container_width=True)
 
-                # 要確認：類似候補表示
-                if needs_check:
-                    with st.expander(f'⚠️ 要確認リスト（{len(needs_check)}件）— 番組名不一致・期間未設定など'):
-                        _ck_rows = []
-                        for _i in needs_check:
-                            _sim = ', '.join(_i.get('similar_titles', [])[:3]) or '（候補なし）'
-                            _ck_rows.append({
-                                '番組名':    _i['program'],
-                                '番宣期間':  _i['period'],
-                                'SPOT':      _i['spots'],
-                                '理由':      _i['comment'][:60],
-                                '類似候補':  _sim,
-                            })
-                        st.dataframe(pd.DataFrame(_ck_rows), use_container_width=True)
+                if period_unset:
+                    with st.expander(f'📝 期間未設定 {len(period_unset)}件'):
+                        st.dataframe(pd.DataFrame([{
+                            '番組名': _i['program'], 'SPOT': _i['spots'],
+                        } for _i in period_unset]), use_container_width=True)
 
-                # 番組別 履歴照合デバッグ
-                with st.expander('🔍 番組別 履歴照合デバッグ情報（過去平均が空の原因確認）'):
-                    _dbg_rows = []
-                    for _prog, _di in hist_debug.items():
-                        _dbg_rows.append({
-                            '番組名（Excel）': _prog,
-                            '正規化後':        _di.get('正規化後', ''),
-                            '4週平均':         _di.get('4w', ''),
-                            '13週平均':        _di.get('13w', ''),
-                        })
-                    if _dbg_rows:
-                        st.dataframe(pd.DataFrame(_dbg_rows), use_container_width=True)
-                    else:
-                        st.info('照合対象番組がありませんでした。')
+                if period_unparseable:
+                    with st.expander(f'⚠️ 期間解析不可 {len(period_unparseable)}件'):
+                        st.dataframe(pd.DataFrame([{
+                            '番組名': _i['program'], '番宣期間': _i['period'],
+                        } for _i in period_unparseable]), use_container_width=True)
 
-                # ── 専用PDF生成 ───────────────────────────────────
+                # ── PDF 生成 ──────────────────────────────────────
+                if not target_items:
+                    st.warning('⚠️ 判定対象番組が0件のため PDF は生成されません。')
+                    st.stop()
+
                 st.info('番宣効果判定レポート PDF 生成中...')
                 promo_html = build_promo_effect_html(
                     promo_result, week_range, week_num, year_val,
                 )
                 pdf_bytes = generate_pdf_from_html_string(promo_html)
 
-                # ── Drive 登録用 ZIP ──────────────────────────────
+                # ── ZIP 生成 ──────────────────────────────────────
                 _ws_str = ws.strftime('%Y/%m/%d') if ws else ''
                 _we_str = we.strftime('%Y/%m/%d') if we else ''
                 _promo_records = [{
@@ -654,19 +652,19 @@ elif report_type == '② 番宣効果検証':
                     'spots':                   _it['spots'],
                     'material':                _it.get('material', '—'),
                     'current_viewing_ppl':     _it.get('viewing_ppl', 0),
-                    'current_viewing_devices': _it.get('viewing_dev', 0),
+                    'current_viewing_devices': 0,
                     'past_4w_avg_ppl':         _it.get('past_4w_avg_ppl'),
-                    'past_13w_avg_ppl':        _it.get('past_13w_avg_ppl'),
+                    'past_13w_avg_ppl':        None,
                     'diff_4w_pct':             _it.get('diff_4w_pct'),
-                    'diff_13w_pct':            _it.get('diff_13w_pct'),
+                    'diff_13w_pct':            None,
                     'judgment':                _it.get('judgment'),
                     'comment':                 _it.get('comment'),
                     'match_type':              _it.get('match_type'),
-                } for _it in all_items]
+                } for _it in target_items]
                 zip_bytes_p = build_promo_zip(pdf_bytes, year_val, week_num, _promo_records)
 
                 st.success(f'✅ {year_val}年 W{week_num:02d} 番宣効果判定レポート生成完了！')
-                st.info('📁 生成後、Google Drive の BSよしもと_視聴率レポート保管庫へ手動アップロードしてください。')
+                st.info('📁 生成後、Google Drive へ手動アップロードしてください。')
                 _pcol1, _pcol2 = st.columns(2)
                 with _pcol1:
                     st.download_button(
@@ -689,6 +687,7 @@ elif report_type == '② 番宣効果検証':
                 st.markdown(f'<div class="error-box">❌ エラー: {_e}</div>', unsafe_allow_html=True)
                 import traceback
                 st.code(traceback.format_exc())
+
 
 
 # ════════════════════════════════════════
@@ -801,15 +800,16 @@ elif report_type == '③ クール総括マクロ':
 elif report_type == '④ 過去レポート取り込み（肥後用）':
     st.markdown("#### 📁 過去レポート取り込み")
     st.markdown(
-        '<div class="status-box">Drive の archive / Ratings-archive フォルダ内の過去E2A CSVから番組別週次履歴を再構築します。</div>',
+        '<div class="status-box">Drive の ratings フォルダ配下を再帰的に検索して過去E2A CSVから'
+        ' <code>program_history_MASTER.csv</code> を再構築します。</div>',
         unsafe_allow_html=True,
     )
 
     # ── A. 過去CSVから履歴データを再構築 ──────────────────────────
     st.markdown("##### 1️⃣ 過去CSVから履歴データを再構築")
     st.markdown(
-        "Ratings フォルダおよびサブフォルダ内の E2A_HM CSV を全件読み込み、"
-        "番組別履歴JSONとサマリーJSONを生成します。"
+        "ratings フォルダ配下のすべてのサブフォルダを再帰的に検索して E2A_HM CSV を全件読み込み、"
+        "`program_history_MASTER.csv` とサマリーJSONを生成します。"
     )
 
     if st.button('🔄 過去CSVから履歴データを再構築', key='btn_backfill'):
@@ -820,22 +820,73 @@ elif report_type == '④ 過去レポート取り込み（肥後用）':
                 from datetime import date as _today_cls
 
                 result = build_history_from_archive(DRIVE_FOLDER_ID)
-                weekly   = result['weekly']
-                e2a_cnt  = result['e2a_count']
-                ok_cnt   = result['success_count']
-                skipped  = result['skipped']
+                weekly    = result['weekly']
+                e2a_cnt   = result['e2a_count']
+                ok_cnt    = result['success_count']
+                skipped   = result['skipped']
+                manifest  = result.get('manifest', [])
 
                 if ok_cnt == 0:
-                    st.warning('⚠️ 処理できたE2Aファイルが0件でした。DriveのarchiveフォルダにE2A_HM CSVが存在するか確認してください。')
+                    st.warning('⚠️ 処理できたE2Aファイルが0件でした。Drive の ratings フォルダ配下に E2A_HM CSV が存在するか確認してください。')
                 else:
-                    st.success(f'✅ {e2a_cnt}件中 {ok_cnt}週分の番組履歴を再構築しました。')
+                    st.success(f'✅ {e2a_cnt}件のユニークE2Aを処理し、{ok_cnt}週分の番組履歴を再構築しました。')
 
-                    if skipped:
-                        with st.expander(f'⚠️ スキップされたファイル（{len(skipped)}件）'):
-                            import pandas as pd
-                            st.dataframe(pd.DataFrame(skipped, columns=['ファイル名', '理由']),
-                                         use_container_width=True)
+                import pandas as pd
+                from core.promo_effect_report import normalize_program_title as _norm_t
 
+                # ── 生成サマリー ──────────────────────────────────────
+                _all_records = [r for wdata in weekly.values() for r in wdata.get('records', [])]
+                _all_progs   = {_norm_t(str(r.get('program_title') or r.get('program_name', '')))
+                                for r in _all_records if r.get('program_title') or r.get('program_name')}
+                _week_labels = sorted(f'{y}-W{w:02d}' for (y, w) in weekly.keys())
+                _bc1, _bc2, _bc3, _bc4 = st.columns(4)
+                _bc1.metric('対象E2A数（重複除外）', e2a_cnt)
+                _bc2.metric('再構築週数', ok_cnt)
+                _bc3.metric('総履歴レコード数', len(_all_records))
+                _bc4.metric('番組数（正規化後）', len(_all_progs))
+                if _week_labels:
+                    st.caption(f'含まれる週: {", ".join(_week_labels)}')
+
+                # ── CSV読込マニフェスト ───────────────────────────────
+                if manifest:
+                    with st.expander(f'📋 E2A CSVファイル一覧（全{len(manifest)}件）'):
+                        st.dataframe(
+                            pd.DataFrame(manifest)[[
+                                'ファイル名', 'フォルダ名', '推定週末日', '推定週番号',
+                                '読込行数', '状態', '除外理由',
+                            ]],
+                            use_container_width=True,
+                        )
+
+                # ── 特定番組の週数確認 ────────────────────────────────
+                _SPOTLIGHT_PROGS = [
+                    ('うさいしきんのマイマップ', 'うさいしきんのマイマップ'),
+                    ('ニューヨーク屋敷のゴルフ交友録', 'ニューヨーク屋敷のゴルフ交友録'),
+                ]
+                _spot_rows = []
+                for _disp, _search in _SPOTLIGHT_PROGS:
+                    _norm_s = _norm_t(_search)
+                    _weeks_found = []
+                    for (yr, wk), wdata in sorted(weekly.items()):
+                        for _rec in wdata.get('records', []):
+                            _pn = str(_rec.get('program_title') or _rec.get('program_name', ''))
+                            if _norm_t(_pn) == _norm_s:
+                                _weeks_found.append(f'{yr}-W{wk:02d}')
+                                break
+                    _spot_rows.append({
+                        '番組名':     _disp,
+                        '週数':       len(_weeks_found),
+                        '含まれる週': ', '.join(_weeks_found) if _weeks_found else '（なし）',
+                    })
+                st.markdown("**🔍 特定番組の履歴週数**")
+                st.dataframe(pd.DataFrame(_spot_rows), use_container_width=True)
+
+                if skipped:
+                    with st.expander(f'⚠️ スキップされたファイル（{len(skipped)}件）'):
+                        st.dataframe(pd.DataFrame(skipped, columns=['ファイル名', '理由']),
+                                     use_container_width=True)
+
+                if ok_cnt > 0:
                     zip_bytes_bf = build_backfill_zip(weekly)
                     today_str = _today_cls.today().strftime('%Y%m%d')
                     st.download_button(
@@ -846,8 +897,9 @@ elif report_type == '④ 過去レポート取り込み（肥後用）':
                         key='dl_backfill_zip',
                     )
                     st.info(
-                        '解凍後、ZIPの 04_週次サマリーJSON/ と 05_番組別履歴/ の中身を\n'
-                        'Google DriveのBSよしもと_視聴率レポート保管庫へ手動アップロードしてください。'
+                        '解凍後、ZIPの内容を Google Drive の BSよしもと_視聴率レポート保管庫へ手動アップロードしてください。\n'
+                        '• `05_番組別履歴/program_history_MASTER.csv` → ②番宣効果検証で使用\n'
+                        '• `04_週次サマリーJSON/` → ③クール総括マクロで使用'
                     )
 
             except Exception as _e:
@@ -889,7 +941,8 @@ BSよしもと_視聴率レポート保管庫/
 ├── 02_番宣効果検証PDF/       ← ②で生成したPDF
 ├── 03_クール総括PDF/         ← ③で生成したPDF
 ├── 04_週次サマリーJSON/      ← ①ZIPに同梱 / バックフィルZIPに同梱
-├── 05_番組別履歴/            ← ①ZIPに同梱 / バックフィルZIPに同梱
+├── 05_番組別履歴/            ← program_history_MASTER.csv（バックフィルZIPに同梱）
+│                               ②番宣効果検証の履歴データソース
 ├── 06_番宣履歴/              ← ②ZIPに同梱
 └── 99_過去レポート取り込み/  ← 過去レポートPDF（参照のみ・分析対象外）
 ```
